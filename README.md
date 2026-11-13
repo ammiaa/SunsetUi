@@ -7,4 +7,4 @@
 ## Usage
 
 [Document](https://sunset-ui.xo.je)
-[Exemple](https://github.com/ammiaa/SunsetUi/exemple.lua)
+[Exemple](https://github.com/ammiaa/SunsetUi/blob/main/exemple.lua)
