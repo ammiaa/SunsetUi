@@ -1,1556 +1,6770 @@
 --[[
-    SunsetUI  -  UI library free and new)
+    Sunset - Dark Interface
 
-    O que mudou em relação à original:
-      * sem DepthOfField / Part de blur  -> zero custo por frame
-      * sem centenas de frames de "pixel de canto" e sem fade recursivo de descendentes
-      * nenhum RenderStepped permanente (conexões só existem enquanto você arrasta algo)
-      * 1 popup por vez (dropdown / colorpicker), criados só quando usados
-      * fonte nativa (GothamSSm) -> sem download de fonte nem asset customizado
-      * visual: cantos arredondados, sombra suave, gradiente de destaque, tipografia limpa
-]]
+    Baseado em "Sunset UI" por Luvbackpack
+    License: MIT
+    Github: https://github.com/ammiaa/SunsetUI
+--]]
 
-local cloneref = cloneref or function(o) return o end
-local function Svc(n) return cloneref(game:GetService(n)) end
-
-local UIS          = Svc("UserInputService")
-local TweenService = Svc("TweenService")
-local Players      = Svc("Players")
-local HttpService  = Svc("HttpService")
-
-local LocalPlayer = Players.LocalPlayer
-local IsMobile    = UIS.TouchEnabled and not UIS.KeyboardEnabled
-
---------------------------------------------------------------------------------
--- Estado / tema
---------------------------------------------------------------------------------
-local Library = {
-    Flags = {}, SetFlags = {}, Connections = {}, Bound = {}, Gradients = {}, Edges = {}, Keybinds = {},
-    Folders = { Directory = "NovaUI", Configs = "NovaUI/Configs" },
-    Theme = {
-        Background     = Color3.fromRGB(12, 12, 16),
-        Panel          = Color3.fromRGB(18, 18, 24),
-        Element        = Color3.fromRGB(27, 27, 36),
-        Outline        = Color3.fromRGB(40, 40, 54),
-        Text           = Color3.fromRGB(238, 238, 246),
-        SubText        = Color3.fromRGB(148, 148, 168),
-        Accent         = Color3.fromRGB(99, 132, 255),
-        AccentGradient = Color3.fromRGB(176, 108, 255),
-    },
-    MenuKey = Enum.KeyCode.Insert,
-    UnnamedFlags = 0,
+-- Export Types --
+export type Window = {
+	Name: string,
+	Keybind: string | Enum.KeyCode,
+	Scale: UDim2,
+	Expire: string
 }
 
-local FontPath = "rbxasset://fonts/families/GothamSSm.json"
-local Fonts = {
-    Regular  = Font.new(FontPath, Enum.FontWeight.Regular),
-    Medium   = Font.new(FontPath, Enum.FontWeight.Medium),
-    SemiBold = Font.new(FontPath, Enum.FontWeight.SemiBold),
-    Bold     = Font.new(FontPath, Enum.FontWeight.Bold),
+export type Loader = {
+	Name: string,
+	Duration: number,
+	Scale: number
 }
-Library.Fonts = Fonts
 
---------------------------------------------------------------------------------
--- Helpers
---------------------------------------------------------------------------------
-local function G(t, ...)
-    for _, k in ipairs({ ... }) do
-        local v = t[k]
-        if v ~= nil then return v end
-    end
-end
-
-local function Bind(o, prop, key)
-    o[prop] = Library.Theme[key]
-    table.insert(Library.Bound, { o, prop, key })
-end
-
-local TEXT = { TextLabel = true, TextButton = true, TextBox = true }
-
-local function New(class, props, children)
-    local o = Instance.new(class)
-    if o:IsA("GuiObject") then o.BorderSizePixel = 0 end
-    if TEXT[class] then
-        o.FontFace = Fonts.Medium
-        o.TextSize = 13
-        o.BackgroundTransparency = 1
-        o.TextColor3 = Library.Theme.Text
-        if class == "TextButton" then o.AutoButtonColor = false; o.Text = "" end
-    elseif class == "ImageLabel" or class == "ImageButton" then
-        o.BackgroundTransparency = 1
-    elseif class == "ScrollingFrame" then
-        o.BackgroundTransparency = 1
-        o.ScrollBarThickness = 2
-        o.ScrollBarImageColor3 = Library.Theme.Accent
-        o.CanvasSize = UDim2.new()
-        o.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    end
-    local parent, theme
-    for k, v in pairs(props or {}) do
-        if k == "Parent" then parent = v
-        elseif k == "Theme" then theme = v
-        else o[k] = v end
-    end
-    if theme then for p, key in pairs(theme) do Bind(o, p, key) end end
-    if children then for _, c in ipairs(children) do c.Parent = o end end
-    if parent then o.Parent = parent end
-    return o
-end
-
-local function Corner(p, r)
-    return New("UICorner", { CornerRadius = UDim.new(0, r or 6), Parent = p })
-end
-
-local function Stroke(p, key, th)
-    local s = New("UIStroke", { Thickness = th or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = p })
-    Bind(s, "Color", key or "Outline")
-    return s
-end
-
-local function Pad(p, l, t, r, b)
-    return New("UIPadding", {
-        PaddingLeft = UDim.new(0, l or 0), PaddingTop = UDim.new(0, t or 0),
-        PaddingRight = UDim.new(0, r or l or 0), PaddingBottom = UDim.new(0, b or t or 0),
-        Parent = p,
-    })
-end
-
-local function List(p, pad, dir)
-    return New("UIListLayout", {
-        Padding = UDim.new(0, pad or 0), SortOrder = Enum.SortOrder.LayoutOrder,
-        FillDirection = dir or Enum.FillDirection.Vertical, Parent = p,
-    })
-end
-
-local function Grad(p, rot)
-    local g = New("UIGradient", {
-        Rotation = rot or 0,
-        Color = ColorSequence.new(Library.Theme.Accent, Library.Theme.AccentGradient),
-        Parent = p,
-    })
-    table.insert(Library.Gradients, g)
-    return g
-end
-
--- brilho suave (usa a mesma imagem de sombra, tingida com a cor do tema)
-local function Glow(parent, key, extra, transp)
-    local g = New("ImageLabel", {
-        Image = "rbxassetid://6014261993", ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, extra or 16, 1, extra or 16),
-        ImageTransparency = transp or 0.7, ZIndex = 0, Parent = parent,
-    })
-    Bind(g, "ImageColor3", key or "Accent")
-    return g
-end
-
--- borda com gradiente (acento -> contorno -> acento 2)
-local function EdgeSeq()
-    local t = Library.Theme
-    return ColorSequence.new({
-        ColorSequenceKeypoint.new(0, t.Accent), ColorSequenceKeypoint.new(0.4, t.Outline),
-        ColorSequenceKeypoint.new(0.65, t.Outline), ColorSequenceKeypoint.new(1, t.AccentGradient),
-    })
-end
-
-local function EdgeGrad(stroke, rot)
-    local g = New("UIGradient", { Rotation = rot or 45, Color = EdgeSeq(), Parent = stroke })
-    table.insert(Library.Edges, g)
-    return g
-end
-
-local function Tw(o, t, goal, style, dir)
-    local tw = TweenService:Create(o, TweenInfo.new(t or 0.15, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), goal)
-    tw:Play()
-    return tw
-end
-
-local function Inside(gui, pos)
-    local p, s = gui.AbsolutePosition, gui.AbsoluteSize
-    return pos.X >= p.X and pos.X <= p.X + s.X and pos.Y >= p.Y and pos.Y <= p.Y + s.Y
-end
-
--- arrasto: conexões só existem enquanto o botão está pressionado
-local function Drag(handle, onMove, onStart, onEnd)
-    handle.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
-            if onStart then onStart(i) end
-            onMove(i)
-            local mv, en
-            mv = UIS.InputChanged:Connect(function(m)
-                if m.UserInputType == Enum.UserInputType.MouseMovement or m.UserInputType == Enum.UserInputType.Touch then
-                    onMove(m)
-                end
-            end)
-            en = UIS.InputEnded:Connect(function(e)
-                if e.UserInputType == i.UserInputType then
-                    mv:Disconnect(); en:Disconnect()
-                    if onEnd then onEnd() end
-                end
-            end)
-        end
-    end)
-end
-
-local function Chevron(parent, color)
-    local c = New("Frame", { Size = UDim2.fromOffset(12, 8), BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0.5), Parent = parent })
-    for i = 1, 2 do
-        local b = New("Frame", {
-            Size = UDim2.fromOffset(7, 2), AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.new(0, i == 1 and 3.5 or 8.5, 0.5, 0), Rotation = i == 1 and 45 or -45,
-            BackgroundColor3 = color, Parent = c,
-        })
-        Corner(b, 1)
-    end
-    return c
-end
-
---------------------------------------------------------------------------------
--- Núcleo
---------------------------------------------------------------------------------
-function Library:NextFlag()
-    self.UnnamedFlags += 1
-    return "flag_" .. self.UnnamedFlags
-end
-
-function Library:Connect(signal, fn)
-    local c = signal:Connect(fn)
-    table.insert(self.Connections, c)
-    return c
-end
-
-function Library:SafeCall(fn, ...)
-    local ok, err = pcall(fn, ...)
-    if not ok then warn("[NovaUI] " .. tostring(err)) end
-    return ok
-end
-
-function Library:ChangeTheme(key, color)
-    self.Theme[key] = color
-    for _, b in ipairs(self.Bound) do
-        if b[3] == key then b[1][b[2]] = color end
-    end
-    if key == "Accent" or key == "AccentGradient" then
-        local seq = ColorSequence.new(self.Theme.Accent, self.Theme.AccentGradient)
-        for _, g in ipairs(self.Gradients) do g.Color = seq end
-    end
-    if key == "Accent" or key == "AccentGradient" or key == "Outline" then
-        local es = EdgeSeq()
-        for _, g in ipairs(self.Edges) do g.Color = es end
-    end
-end
-
-Library.Presets = {
-    Nova    = { Color3.fromRGB(99, 132, 255),  Color3.fromRGB(176, 108, 255) },
-    Sunset  = { Color3.fromRGB(255, 125, 90),  Color3.fromRGB(255, 70, 150) },
-    Emerald = { Color3.fromRGB(52, 211, 153),  Color3.fromRGB(56, 189, 248) },
-    Amber   = { Color3.fromRGB(251, 191, 36),  Color3.fromRGB(249, 115, 22) },
-    Rose    = { Color3.fromRGB(244, 114, 182), Color3.fromRGB(167, 139, 250) },
-    Ice     = { Color3.fromRGB(125, 211, 252), Color3.fromRGB(165, 180, 252) },
+export type Menu = {
+	Name: string,
+	Icon: string,
+	AutoFill: boolean
 }
-Library.PresetNames = { "Nova", "Sunset", "Emerald", "Amber", "Rose", "Ice" }
 
-function Library:ApplyPreset(name)
-    local p = self.Presets[name]
-    if not p then return end
-    self:ChangeTheme("Accent", p[1])
-    self:ChangeTheme("AccentGradient", p[2])
-    local a, b = self.SetFlags["AccentColor"], self.SetFlags["AccentGradientColor"]
-    if a then a(p[1]) end
-    if b then b(p[2]) end
-end
-
--- GUI raiz -------------------------------------------------------------------
-local Gui = New("ScreenGui", {
-    Name = HttpService:GenerateGUID(false), ResetOnSpawn = false, IgnoreGuiInset = true,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 100,
-})
-do
-    if syn and syn.protect_gui then pcall(syn.protect_gui, Gui) end
-    local ok, h = pcall(function() return gethui and gethui() end)
-    Gui.Parent = (ok and h) or cloneref(game:GetService("CoreGui"))
-end
-Library.Gui = Gui
-
-local NotifHolder = New("Frame", {
-    Size = UDim2.new(0, 300, 1, -32), Position = UDim2.new(1, -16, 0, 16), AnchorPoint = Vector2.new(1, 0),
-    BackgroundTransparency = 1, ZIndex = 90, Parent = Gui,
-})
-New("UIListLayout", {
-    Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
-    VerticalAlignment = Enum.VerticalAlignment.Bottom, HorizontalAlignment = Enum.HorizontalAlignment.Right,
-    Parent = NotifHolder,
-})
-
-local Overlay = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ZIndex = 100, Parent = Gui })
-Library.Overlay = Overlay
-
--- popup com sombra (dropdown / colorpicker)
-local function MakePopup(w, h)
-    local outer = New("Frame", { Visible = false, Size = UDim2.fromOffset(w, h), BackgroundTransparency = 1, Parent = Overlay })
-    New("UIScale", { Name = "S", Parent = outer })
-    New("ImageLabel", {
-        Image = "rbxassetid://6014261993", ImageColor3 = Color3.new(0, 0, 0), ImageTransparency = 0.45,
-        ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 4), Size = UDim2.new(1, 36, 1, 36), Parent = outer,
-    })
-    local panel = New("Frame", { Size = UDim2.fromScale(1, 1), Theme = { BackgroundColor3 = "Panel" }, Parent = outer })
-    Corner(panel, 8); Stroke(panel)
-    return outer, panel
-end
-
--- popups (um por vez) ----------------------------------------------------------
-function Library:ShowPopup(frame, owner, alignRight, onClose)
-    self:HidePopup()
-    local fw, fh = frame.Size.X.Offset, frame.Size.Y.Offset
-    local op, os = owner.AbsolutePosition, owner.AbsoluteSize
-    local ov = Overlay.AbsoluteSize
-    local x = alignRight and (op.X + os.X - fw) or op.X
-    local y = op.Y + os.Y + 6
-    x = math.clamp(x, 4, math.max(4, ov.X - fw - 4))
-    if y + fh > ov.Y - 4 then y = math.max(4, op.Y - fh - 6) end
-    frame.Position = UDim2.fromOffset(x, y)
-    frame.Visible = true
-    local s = frame:FindFirstChild("S")
-    if s then s.Scale = 0.94; Tw(s, 0.15, { Scale = 1 }) end
-    self.ActivePopup = { Frame = frame, Owner = owner, OnClose = onClose }
-end
-
-function Library:HidePopup()
-    local p = self.ActivePopup
-    if p then
-        self.ActivePopup = nil
-        p.Frame.Visible = false
-        if p.OnClose then p.OnClose() end
-    end
-end
-
--- notificações ---------------------------------------------------------------
-local NotifCount = 0
-function Library:Notification(Data)
-    Data = Data or {}
-    local dur = Data.Duration or 4
-    NotifCount += 1
-    local wrap = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = NotifCount, Parent = NotifHolder })
-    local card = New("Frame", {
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Position = UDim2.new(1.15, 0, 0, 0),
-        Theme = { BackgroundColor3 = "Panel" }, Parent = wrap,
-    })
-    Corner(card, 8); Stroke(card)
-    local accent = New("Frame", { Size = UDim2.new(0, 3, 1, -18), Position = UDim2.fromOffset(7, 9), BackgroundColor3 = Color3.new(1, 1, 1), Parent = card })
-    Corner(accent, 2); Grad(accent, 90)
-    local content = New("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = card })
-    Pad(content, 18, 10, 12, 10); List(content, 4)
-    New("TextLabel", { Text = Data.Title or "Notification", FontFace = Fonts.SemiBold, Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 1, Parent = content })
-    if (Data.Description or "") ~= "" then
-        New("TextLabel", {
-            Text = Data.Description, Theme = { TextColor3 = "SubText" }, TextSize = 12, TextWrapped = true,
-            Size = UDim2.new(1, 0, 0, 14), AutomaticSize = Enum.AutomaticSize.Y, TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Top, LayoutOrder = 2, Parent = content,
-        })
-    end
-    local bar = New("Frame", { Size = UDim2.new(1, 0, 0, 3), Theme = { BackgroundColor3 = "Element" }, LayoutOrder = 3, Parent = content })
-    Corner(bar, 2)
-    local fill = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), Parent = bar })
-    Corner(fill, 2); Grad(fill)
-    Tw(card, 0.35, { Position = UDim2.new(0, 0, 0, 0) }, Enum.EasingStyle.Quint)
-    Tw(fill, dur, { Size = UDim2.new(0, 0, 1, 0) }, Enum.EasingStyle.Linear)
-    task.delay(dur, function()
-        Tw(card, 0.3, { Position = UDim2.new(1.15, 0, 0, 0) }, Enum.EasingStyle.Quint)
-        task.wait(0.32)
-        wrap:Destroy()
-    end)
-end
-
--- watermark ------------------------------------------------------------------
-function Library:Watermark(items)
-    if not self.WatermarkFrame then
-        local f = New("Frame", {
-            Position = UDim2.fromOffset(16, 16), Size = UDim2.new(0, 0, 0, 28), AutomaticSize = Enum.AutomaticSize.X,
-            Visible = false, Theme = { BackgroundColor3 = "Panel" }, Parent = Gui,
-        })
-        Corner(f, 7); Stroke(f); Pad(f, 12, 0, 12, 0)
-        local line = New("Frame", { Size = UDim2.new(1, -14, 0, 2), Position = UDim2.fromOffset(7, 0), BackgroundColor3 = Color3.new(1, 1, 1), Parent = f })
-        Corner(line, 1); Grad(line)
-        New("TextLabel", { Name = "L", RichText = true, Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, TextSize = 12, Parent = f })
-        local start, spos
-        Drag(f, function(i)
-            local d = i.Position - start
-            f.Position = UDim2.fromOffset(spos.X + d.X, spos.Y + d.Y)
-        end, function(i) start = i.Position; spos = Vector2.new(f.Position.X.Offset, f.Position.Y.Offset) end)
-        self.WatermarkFrame = f
-    end
-    if items then
-        local sep = '  <font color="rgb(90,90,110)">|</font>  '
-        local parts = {}
-        for _, v in ipairs(items) do table.insert(parts, tostring(v)) end
-        self.WatermarkFrame.L.Text = table.concat(parts, sep)
-    end
-    return self.WatermarkFrame
-end
-
--- lista de keybinds ------------------------------------------------------------
-function Library:KeybindList(Title)
-    local KL = {}
-    local f = New("Frame", {
-        Position = UDim2.new(0, 16, 0.4, 0), Size = UDim2.new(0, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-        Visible = false, Theme = { BackgroundColor3 = "Panel" }, Parent = Gui,
-    })
-    Corner(f, 8); Stroke(f); Pad(f, 12, 10, 12, 10); List(f, 4)
-    New("UISizeConstraint", { MinSize = Vector2.new(140, 0), Parent = f })
-    New("TextLabel", { Text = Title or "Keybinds", FontFace = Fonts.SemiBold, Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 0, Parent = f })
-    local start, spos
-    Drag(f, function(i)
-        local d = i.Position - start
-        f.Position = UDim2.fromOffset(spos.X + d.X, spos.Y + d.Y)
-    end, function(i) start = i.Position; spos = f.AbsolutePosition end)
-    local rows = {}
-    function KL:SetVisibility(b) f.Visible = b end
-    function KL:Refresh()
-        for _, r in ipairs(rows) do r:Destroy() end
-        rows = {}
-        for n, kb in ipairs(Library.Keybinds) do
-            if kb.Key and kb.Toggled and kb.ShowInList then
-                local k = Library.KeyName(kb.Key)
-                local r = New("TextLabel", {
-                    Text = kb.Name .. "  [" .. k .. "]", Theme = { TextColor3 = "SubText" }, TextSize = 12,
-                    Size = UDim2.new(1, 0, 0, 16), TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = n, Parent = f,
-                })
-                table.insert(rows, r)
-            end
-        end
-    end
-    self.KeyList = KL
-    return KL
-end
-
-function Library:RefreshKeybindList()
-    if self.KeyList then self.KeyList:Refresh() end
-end
-
---------------------------------------------------------------------------------
--- Configs
---------------------------------------------------------------------------------
-local function FS() return isfolder and makefolder and writefile and readfile and isfile and listfiles end
-
-if FS() then
-    pcall(function()
-        for _, p in pairs(Library.Folders) do
-            if not isfolder(p) then makefolder(p) end
-        end
-    end)
-end
-
-function Library:GetConfig()
-    local cfg = {}
-    for flag, v in pairs(self.Flags) do
-        if type(v) == "table" then
-            if typeof(v.Color) == "Color3" then
-                cfg[flag] = { Color = v.Hex, Alpha = v.Alpha }
-            elseif v.Type then
-                cfg[flag] = { Key = v.Key, Type = v.Type, Mode = v.Mode }
-            else
-                cfg[flag] = v
-            end
-        else
-            cfg[flag] = v
-        end
-    end
-    return HttpService:JSONEncode(cfg)
-end
-
-function Library:LoadConfig(json)
-    local ok, data = pcall(HttpService.JSONDecode, HttpService, json)
-    if not ok then return false, data end
-    for flag, v in pairs(data) do
-        local set = self.SetFlags[flag]
-        if set then self:SafeCall(set, v) end
-    end
-    return true
-end
-
-function Library:RefreshConfigsList(listbox)
-    local list = {}
-    if FS() and isfolder(self.Folders.Configs) then
-        for _, p in ipairs(listfiles(self.Folders.Configs)) do
-            local n = p:match("[^/\\]+$")
-            if n and n:sub(-5) == ".json" then table.insert(list, n) end
-        end
-    end
-    if listbox then listbox:Refresh(list) end
-end
-
-function Library:Unload()
-    for _, c in ipairs(self.Connections) do pcall(function() c:Disconnect() end) end
-    self.Connections = {}
-    Gui:Destroy()
-    self.Unloaded = true
-    if getgenv then getgenv().NovaLib = nil end
-end
-
---------------------------------------------------------------------------------
--- Teclas
---------------------------------------------------------------------------------
-local KeyAlias = {
-    LeftShift = "LShift", RightShift = "RShift", LeftControl = "LCtrl", RightControl = "RCtrl",
-    LeftAlt = "LAlt", RightAlt = "RAlt", MouseButton1 = "MB1", MouseButton2 = "MB2", MouseButton3 = "MB3",
-    Return = "Enter", Backspace = "Back",
+export type Section = {
+	Name: string,
+	Position: string,
+	Height: number,
 }
-function Library.KeyName(k)
-    if not k then return "None" end
-    return KeyAlias[k.Name] or k.Name
-end
-
-local function ResolveKey(v)
-    if typeof(v) == "EnumItem" then return v end
-    if type(v) == "table" and v.Key and v.Key ~= "None" then
-        local enum = v.Type == "UserInputType" and Enum.UserInputType or Enum.KeyCode
-        local ok, r = pcall(function() return enum[v.Key] end)
-        if ok then return r end
-    elseif type(v) == "string" and v ~= "None" then
-        local ok, r = pcall(function() return Enum.KeyCode[v] end)
-        if ok then return r end
-    end
-    return nil
-end
-
--- handlers globais (um de cada, para a lib toda)
-Library:Connect(UIS.InputBegan, function(input, gp)
-    local t = input.UserInputType
-    -- fechar popup ao clicar fora
-    local p = Library.ActivePopup
-    if p and (t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch) then
-        if not Inside(p.Frame, input.Position) and not Inside(p.Owner, input.Position) then
-            Library:HidePopup()
-        end
-    end
-    if gp or Library.Listening then return end
-    if Library.MenuKey and input.KeyCode == Library.MenuKey and Library.CurrentWindow then
-        Library.CurrentWindow:SetOpen(not Library.CurrentWindow.IsOpen)
-    end
-    for _, kb in ipairs(Library.Keybinds) do
-        local k = kb.Key
-        if k and (input.KeyCode == k or t == k) then
-            if kb.Mode == "Toggle" then kb.Toggled = not kb.Toggled
-            elseif kb.Mode == "Hold" then kb.Toggled = true
-            else kb.Toggled = true end
-            kb:Fire()
-        end
-    end
-end)
-
-Library:Connect(UIS.InputEnded, function(input)
-    for _, kb in ipairs(Library.Keybinds) do
-        local k = kb.Key
-        if kb.Mode == "Hold" and k and (input.KeyCode == k or input.UserInputType == k) then
-            kb.Toggled = false
-            kb:Fire()
-        end
-    end
-end)
-
-Library:Connect(UIS.InputChanged, function(input)
-    if input.UserInputType == Enum.UserInputType.MouseWheel then
-        local p = Library.ActivePopup
-        if p and not Inside(p.Frame, input.Position) then Library:HidePopup() end
-    end
-end)
-
---------------------------------------------------------------------------------
--- Componentes reutilizáveis
---------------------------------------------------------------------------------
-local function RightBox(row)
-    local rb = New("Frame", {
-        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.new(0, 0, 1, 0),
-        AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Parent = row,
-    })
-    New("UIListLayout", {
-        FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right,
-        VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = rb,
-    })
-    return rb
-end
-
-local function CreateKeybind(rb, Data)
-    local KB = {
-        Name = G(Data, "Name", "name") or "Keybind",
-        Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Mode = G(Data, "Mode", "mode") or "Toggle",
-        Callback = G(Data, "Callback", "callback"),
-        Changed = G(Data, "Changed", "changed"),
-        ShowInList = G(Data, "ShowInList", "showinlist") ~= false,
-        Toggled = false,
-    }
-    local chip = New("TextButton", {
-        AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 0, 20), TextSize = 12,
-        Theme = { BackgroundColor3 = "Element", TextColor3 = "SubText" }, LayoutOrder = 2, BackgroundTransparency = 0, Parent = rb,
-    })
-    Corner(chip, 5); Stroke(chip); Pad(chip, 8, 0, 8, 0)
-
-    function KB:Refresh()
-        chip.Text = Library.KeyName(self.Key) .. (self.Mode ~= "Toggle" and (" / " .. self.Mode) or "")
-    end
-    function KB:Sync()
-        Library.Flags[self.Flag] = {
-            Key = self.Key and self.Key.Name or "None",
-            Type = self.Key and (self.Key.EnumType == Enum.KeyCode and "KeyCode" or "UserInputType") or "KeyCode",
-            Mode = self.Mode, Toggled = self.Toggled,
-        }
-    end
-    function KB:Fire()
-        self:Sync()
-        if self.Callback then Library:SafeCall(self.Callback, self.Toggled) end
-        Library:RefreshKeybindList()
-    end
-    function KB:SetMode(m)
-        self.Mode = m
-        self.Toggled = (m == "Always")
-        self:Refresh()
-        if m == "Always" then self:Fire() else self:Sync(); Library:RefreshKeybindList() end
-    end
-    function KB:Set(v, silent)
-        if type(v) == "table" and v.Mode and (v.Mode == "Toggle" or v.Mode == "Hold" or v.Mode == "Always") then
-            self.Mode = v.Mode
-        end
-        self.Key = ResolveKey(v)
-        self:Refresh(); self:Sync(); Library:RefreshKeybindList()
-        if self.Changed and not silent then Library:SafeCall(self.Changed, self.Key) end
-    end
-    function KB:Get() return self.Key, self.Mode, self.Toggled end
-
-    chip.MouseButton1Click:Connect(function()
-        if Library.Listening then return end
-        Library.Listening = KB
-        chip.Text = "..."
-        local conn
-        conn = UIS.InputBegan:Connect(function(i)
-            local t = i.UserInputType
-            if t == Enum.UserInputType.Keyboard then
-                if i.KeyCode == Enum.KeyCode.Backspace or i.KeyCode == Enum.KeyCode.Escape then KB:Set(nil) else KB:Set(i.KeyCode) end
-            elseif t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.MouseButton2 or t == Enum.UserInputType.MouseButton3 then
-                KB:Set(t)
-            else
-                return
-            end
-            conn:Disconnect()
-            task.defer(function() Library.Listening = nil end)
-        end)
-    end)
-    chip.MouseButton2Click:Connect(function()
-        local order = { Toggle = "Hold", Hold = "Always", Always = "Toggle" }
-        KB:SetMode(order[KB.Mode] or "Toggle")
-    end)
-
-    table.insert(Library.Keybinds, KB)
-    KB:Set(G(Data, "Default", "default"), true)
-    KB.Mode = KB.Mode
-    KB:Refresh()
-    Library.SetFlags[KB.Flag] = function(v) KB:Set(v) end
-    return KB
-end
-
-local function CreateColorpicker(rb, Data)
-    local CP = {
-        Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Callback = G(Data, "Callback", "callback") or function() end,
-        H = 0, S = 0, V = 1, A = 1,
-    }
-    local alphaOpt = G(Data, "Alpha", "alpha")
-    CP.UseAlpha = (alphaOpt == true) or type(alphaOpt) == "number"
-
-    local chip = New("TextButton", { Size = UDim2.fromOffset(26, 16), BackgroundTransparency = 0, BackgroundColor3 = Color3.new(1, 1, 1), LayoutOrder = 1, Parent = rb })
-    Corner(chip, 5); Stroke(chip)
-
-    local ui
-    local function Build()
-        ui = {}
-        local hexY = CP.UseAlpha and 176 or 158
-        local outer, frame = MakePopup(210, hexY + 24 + 10)
-        ui.frame = outer
-
-        local pal = New("Frame", { Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(190, 120), BackgroundColor3 = Color3.new(1, 0, 0), Parent = frame })
-        Corner(pal, 5)
-        local sat = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), Parent = pal })
-        Corner(sat, 5); New("UIGradient", { Transparency = NumberSequence.new(0, 1), Parent = sat })
-        local val = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), Parent = pal })
-        Corner(val, 5); New("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0), Parent = val })
-        local cursor = New("Frame", { Size = UDim2.fromOffset(10, 10), AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Parent = pal })
-        Corner(cursor, 99); New("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 2, Parent = cursor })
-        local phit = New("TextButton", { Size = UDim2.fromScale(1, 1), Parent = pal })
-        ui.pal, ui.cursor = pal, cursor
-        Drag(phit, function(i)
-            local p, s = pal.AbsolutePosition, pal.AbsoluteSize
-            CP.S = math.clamp((i.Position.X - p.X) / s.X, 0, 1)
-            CP.V = 1 - math.clamp((i.Position.Y - p.Y) / s.Y, 0, 1)
-            CP:Refresh()
-        end)
-
-        local function Bar(y)
-            local b = New("Frame", { Position = UDim2.fromOffset(10, y), Size = UDim2.fromOffset(190, 10), BackgroundColor3 = Color3.new(1, 1, 1), Parent = frame })
-            Corner(b, 99)
-            local k = New("Frame", { Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), Parent = b })
-            Corner(k, 99); New("UIStroke", { Color = Color3.fromRGB(20, 20, 26), Thickness = 2, Parent = k })
-            local hit = New("TextButton", { Size = UDim2.new(1, 0, 1, 8), Position = UDim2.fromOffset(0, -4), Parent = b })
-            return b, k, hit
-        end
-
-        local hue, hueK, hueHit = Bar(140)
-        New("UIGradient", {
-            Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)), ColorSequenceKeypoint.new(1 / 6, Color3.fromRGB(255, 255, 0)),
-                ColorSequenceKeypoint.new(2 / 6, Color3.fromRGB(0, 255, 0)), ColorSequenceKeypoint.new(3 / 6, Color3.fromRGB(0, 255, 255)),
-                ColorSequenceKeypoint.new(4 / 6, Color3.fromRGB(0, 0, 255)), ColorSequenceKeypoint.new(5 / 6, Color3.fromRGB(255, 0, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
-            }), Parent = hue,
-        })
-        ui.hueK = hueK
-        Drag(hueHit, function(i)
-            CP.H = math.clamp((i.Position.X - hue.AbsolutePosition.X) / hue.AbsoluteSize.X, 0, 1)
-            CP:Refresh()
-        end)
-
-        if CP.UseAlpha then
-            local al, alK, alHit = Bar(158)
-            New("UIGradient", { Transparency = NumberSequence.new(1, 0), Parent = al })
-            ui.alpha, ui.alphaK = al, alK
-            Drag(alHit, function(i)
-                CP.A = math.clamp((i.Position.X - al.AbsolutePosition.X) / al.AbsoluteSize.X, 0, 1)
-                CP:Refresh()
-            end)
-        end
-
-        local hex = New("TextBox", {
-            Position = UDim2.fromOffset(10, hexY), Size = UDim2.fromOffset(190, 24), BackgroundTransparency = 0, ClearTextOnFocus = false,
-            Theme = { BackgroundColor3 = "Element" }, TextSize = 12, Parent = frame,
-        })
-        Corner(hex, 6); Stroke(hex)
-        ui.hex = hex
-        hex.FocusLost:Connect(function() CP:Set(hex.Text, nil) end)
-    end
-
-    function CP:Color() return Color3.fromHSV(self.H, self.S, self.V) end
-
-    function CP:Refresh(silent)
-        local c = self:Color()
-        chip.BackgroundColor3 = c
-        Library.Flags[self.Flag] = { Color = c, Alpha = self.A, Hex = c:ToHex() }
-        if ui then
-            ui.pal.BackgroundColor3 = Color3.fromHSV(self.H, 1, 1)
-            ui.cursor.Position = UDim2.fromScale(self.S, 1 - self.V)
-            ui.hueK.Position = UDim2.fromScale(self.H, 0.5)
-            ui.hex.Text = "#" .. c:ToHex():upper()
-            if ui.alpha then
-                ui.alpha.BackgroundColor3 = c
-                ui.alphaK.Position = UDim2.fromScale(self.A, 0.5)
-            end
-        end
-        if not silent then Library:SafeCall(self.Callback, c, self.A) end
-    end
-
-    function CP:Set(c, a, silent)
-        if type(c) == "string" then
-            local ok, r = pcall(Color3.fromHex, c)
-            if not ok then self:Refresh(true); return end
-            c = r
-        elseif type(c) == "table" then
-            c = Color3.fromRGB(c[1], c[2], c[3])
-        end
-        if typeof(c) ~= "Color3" then return end
-        self.H, self.S, self.V = c:ToHSV()
-        if a ~= nil then self.A = a end
-        self:Refresh(silent)
-    end
-    function CP:Get() return self:Color(), self.A end
-
-    chip.MouseButton1Click:Connect(function()
-        if not ui then Build() end
-        if Library.ActivePopup and Library.ActivePopup.Frame == ui.frame then
-            Library:HidePopup()
-        else
-            CP:Refresh(true)
-            Library:ShowPopup(ui.frame, chip, true)
-        end
-    end)
-
-    CP:Set(G(Data, "Default", "default") or Color3.new(1, 1, 1), type(alphaOpt) == "number" and alphaOpt or 1)
-    Library.SetFlags[CP.Flag] = function(v)
-        if type(v) == "table" and v.Color then CP:Set(v.Color, v.Alpha) else CP:Set(v) end
-    end
-    return CP
-end
-
--- lista de opções (dropdown / listbox) -----------------------------------------
-local function OptionList(scroll, multi, onChange)
-    local L = { Options = {}, Order = {}, Value = multi and {} or nil }
-
-    function L:Paint(o)
-        local on = o.Selected
-        Tw(o.Button, 0.12, { BackgroundTransparency = on and 0.85 or 1 })
-        Tw(o.Label, 0.12, { TextColor3 = on and Library.Theme.Text or Library.Theme.SubText })
-    end
-
-    function L:Add(name)
-        name = tostring(name)
-        if self.Options[name] then return end
-        local btn = New("TextButton", { Size = UDim2.new(1, 0, 0, 24), BackgroundTransparency = 1, LayoutOrder = #self.Order + 1, Theme = { BackgroundColor3 = "Accent" }, Parent = scroll })
-        Corner(btn, 5)
-        local lbl = New("TextLabel", {
-            Text = name, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 1, 0), TextXAlignment = Enum.TextXAlignment.Left,
-            TextTruncate = Enum.TextTruncate.AtEnd, Theme = { TextColor3 = "SubText" }, Parent = btn,
-        })
-        local o = { Name = name, Button = btn, Label = lbl, Selected = false }
-        self.Options[name] = o
-        table.insert(self.Order, name)
-        btn.MouseButton1Click:Connect(function()
-            if multi then
-                local list = {}
-                for _, n in ipairs(self.Order) do
-                    local sel = self.Options[n].Selected
-                    if n == name then sel = not sel end
-                    if sel then table.insert(list, n) end
-                end
-                self:Set(list)
-            else
-                self:Set(name)
-            end
-            if self.OnPick then self.OnPick() end
-        end)
-        return o
-    end
-
-    function L:Set(v, silent)
-        if multi then
-            if type(v) ~= "table" then v = (v ~= nil) and { v } or {} end
-            local want = {}
-            for _, n in ipairs(v) do want[tostring(n)] = true end
-            self.Value = {}
-            for _, n in ipairs(self.Order) do
-                local o = self.Options[n]
-                o.Selected = want[n] == true
-                if o.Selected then table.insert(self.Value, n) end
-                self:Paint(o)
-            end
-        else
-            if v ~= nil then
-                v = tostring(v)
-                if not self.Options[v] then return end
-            end
-            self.Value = v
-            for n, o in pairs(self.Options) do o.Selected = (n == v); self:Paint(o) end
-        end
-        if onChange then onChange(self.Value, silent) end
-    end
-
-    function L:Clear()
-        for _, o in pairs(self.Options) do o.Button:Destroy() end
-        self.Options, self.Order = {}, {}
-        self.Value = multi and {} or nil
-    end
-
-    function L:Filter(text)
-        text = string.lower(text or "")
-        for _, o in pairs(self.Options) do
-            o.Button.Visible = text == "" or string.find(string.lower(o.Name), text, 1, true) ~= nil
-        end
-    end
-
-    return L
-end
-
---------------------------------------------------------------------------------
--- Classes
---------------------------------------------------------------------------------
-local WindowClass  = {}; WindowClass.__index  = WindowClass
-local PageClass    = {}; PageClass.__index    = PageClass
-local SectionClass = {}; SectionClass.__index = SectionClass
-
-local function Row(sec, h)
-    return New("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 1, Parent = sec.Content })
-end
-
---------------------------------------------------------------------------------
--- Window
---------------------------------------------------------------------------------
-function Library:Window(Data)
-    Data = Data or {}
-    local W = setmetatable({
-        Name = G(Data, "Name", "name") or "NovaUI",
-        SubName = G(Data, "SubName", "subname") or "",
-        Logo = G(Data, "Logo", "logo"),
-        Pages = {}, IsOpen = true,
-    }, WindowClass)
-    Library.CurrentWindow = W
-
-    local size = G(Data, "Size", "size") or (IsMobile and Vector2.new(540, 380) or Vector2.new(660, 460))
-    local Root = New("Frame", {
-        Name = "Window", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-        Size = UDim2.fromOffset(size.X, size.Y), BackgroundTransparency = 1, Parent = Gui,
-    })
-    local Scale = New("UIScale", { Parent = Root })
-    W.Root, W.Scale = Root, Scale
-
-    New("ImageLabel", {
-        Image = "rbxassetid://6014261993", ImageColor3 = Color3.new(0, 0, 0), ImageTransparency = 0.55,
-        ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 6), Size = UDim2.new(1, 56, 1, 56), Parent = Root,
-    })
-
-    -- halo colorido atrás da janela
-    local halo = New("ImageLabel", {
-        Image = "rbxassetid://6014261993", ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
-        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, 34, 1, 34),
-        ImageTransparency = 0.86, Parent = Root,
-    })
-    Bind(halo, "ImageColor3", "Accent")
-
-    local Main = New("Frame", { Size = UDim2.fromScale(1, 1), Theme = { BackgroundColor3 = "Background" }, Parent = Root })
-    Corner(Main, 10)
-    New("UIGradient", { Rotation = 115, Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(205, 205, 220)), Parent = Main })
-    local mainStroke = New("UIStroke", { Thickness = 1.2, Color = Color3.new(1, 1, 1), ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = Main })
-    EdgeGrad(mainStroke, 45)
-
-    -- manchas de luz no fundo
-    local function Blob(key, anchor, pos, w, h, tr)
-        local b = New("ImageLabel", {
-            Image = "rbxassetid://6014261993", ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(49, 49, 450, 450),
-            AnchorPoint = anchor, Position = pos, Size = UDim2.fromOffset(w, h), ImageTransparency = tr, Parent = Main,
-        })
-        Bind(b, "ImageColor3", key)
-    end
-    Blob("Accent", Vector2.new(0, 0), UDim2.fromOffset(0, 0), 380, 260, 0.9)
-    Blob("AccentGradient", Vector2.new(1, 1), UDim2.new(1, 0, 1, 0), 340, 240, 0.92)
-
-    local topLine = New("Frame", { Size = UDim2.new(1, -24, 0, 2), Position = UDim2.fromOffset(12, 0), BackgroundColor3 = Color3.new(1, 1, 1), Parent = Main })
-    Corner(topLine, 1); Grad(topLine)
-
-    -- topo
-    local Top = New("Frame", { Size = UDim2.new(1, 0, 0, 52), BackgroundTransparency = 1, Parent = Main })
-    local tx = 16
-    if W.Logo then
-        New("ImageLabel", { Image = "rbxassetid://" .. tostring(W.Logo), Size = UDim2.fromOffset(26, 26), Position = UDim2.fromOffset(14, 13), Parent = Top })
-        tx = 48
-    end
-    local titleLbl = New("TextLabel", { Text = W.Name, FontFace = Fonts.Bold, TextSize = 16, TextColor3 = Color3.new(1, 1, 1), Position = UDim2.fromOffset(tx, 9), Size = UDim2.new(0.5, 0, 0, 18), TextXAlignment = Enum.TextXAlignment.Left, Parent = Top })
-    Grad(titleLbl, 0)
-    New("TextLabel", { Text = W.SubName, TextSize = 11, Theme = { TextColor3 = "SubText" }, Position = UDim2.fromOffset(tx, 28), Size = UDim2.new(0.5, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left, Parent = Top })
-
-    local function TopButton(xoff, glyph)
-        local b = New("TextButton", {
-            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, xoff, 0.5, 0), Size = UDim2.fromOffset(28, 28),
-            BackgroundTransparency = 1, Theme = { BackgroundColor3 = "Element" }, Parent = Top,
-        })
-        Corner(b, 7)
-        local function Bar(rot, w)
-            local f = New("Frame", {
-                Size = UDim2.fromOffset(w, 2), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-                Rotation = rot, Theme = { BackgroundColor3 = "SubText" }, Parent = b,
-            })
-            Corner(f, 1)
-        end
-        if glyph == "x" then Bar(45, 12); Bar(-45, 12) else Bar(0, 11) end
-        local red = glyph == "x"
-        b.MouseEnter:Connect(function()
-            if red then Tw(b, 0.12, { BackgroundTransparency = 0.7, BackgroundColor3 = Color3.fromRGB(255, 70, 90) })
-            else Tw(b, 0.12, { BackgroundTransparency = 0 }) end
-        end)
-        b.MouseLeave:Connect(function() Tw(b, 0.12, { BackgroundTransparency = 1 }) end)
-        return b
-    end
-    TopButton(-12, "x").MouseButton1Click:Connect(function() Library:Unload() end)
-    TopButton(-44, "-").MouseButton1Click:Connect(function() W:SetOpen(false) end)
-
-    local dragStart, startPos
-    Drag(Top, function(i)
-        local d = i.Position - dragStart
-        Root.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-    end, function(i) dragStart = i.Position; startPos = Root.Position end)
-
-    New("Frame", { Size = UDim2.new(1, 0, 0, 1), Position = UDim2.fromOffset(0, 52), Theme = { BackgroundColor3 = "Outline" }, Parent = Main })
-
-    -- corpo
-    local Body = New("Frame", { Position = UDim2.fromOffset(0, 53), Size = UDim2.new(1, 0, 1, -53), BackgroundTransparency = 1, Parent = Main })
-    local Sidebar = New("Frame", { Size = UDim2.new(0, 170, 1, 0), BackgroundTransparency = 1, Parent = Body })
-    New("Frame", { Position = UDim2.fromOffset(170, 0), Size = UDim2.new(0, 1, 1, 0), Theme = { BackgroundColor3 = "Outline" }, Parent = Body })
-
-    local Tabs = New("ScrollingFrame", { Size = UDim2.new(1, 0, 1, -64), ScrollBarThickness = 0, Parent = Sidebar })
-    Pad(Tabs, 10, 10, 10, 6); List(Tabs, 4)
-    W.Tabs = Tabs
-
-    -- chip do usuário
-    local user = New("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 10, 1, -10), Size = UDim2.new(1, -20, 0, 44), Theme = { BackgroundColor3 = "Panel" }, Parent = Sidebar })
-    Corner(user, 8); Stroke(user)
-    local avatar = New("ImageLabel", { Size = UDim2.fromOffset(30, 30), Position = UDim2.fromOffset(8, 7), Theme = { BackgroundColor3 = "Element" }, BackgroundTransparency = 0, Parent = user })
-    Corner(avatar, 99)
-    local online = New("Frame", { Size = UDim2.fromOffset(9, 9), AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, 1, 1, 1), BackgroundColor3 = Color3.fromRGB(70, 220, 120), Parent = avatar })
-    Corner(online, 99); New("UIStroke", { Thickness = 2, Color = Library.Theme.Panel, Parent = online })
-    New("TextLabel", { Text = LocalPlayer.DisplayName, FontFace = Fonts.SemiBold, TextSize = 12, Position = UDim2.fromOffset(46, 6), Size = UDim2.new(1, -52, 0, 16), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = user })
-    New("TextLabel", { Text = "@" .. LocalPlayer.Name, TextSize = 11, Theme = { TextColor3 = "SubText" }, Position = UDim2.fromOffset(46, 22), Size = UDim2.new(1, -52, 0, 14), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = user })
-    task.spawn(function()
-        local ok, img = pcall(Players.GetUserThumbnailAsync, Players, LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
-        if ok and avatar.Parent then avatar.Image = img end
-    end)
-
-    W.Content = New("Frame", { Position = UDim2.fromOffset(171, 0), Size = UDim2.new(1, -171, 1, 0), BackgroundTransparency = 1, ClipsDescendants = true, Parent = Body })
-
-    -- redimensionar
-    local grip = New("TextButton", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -2, 1, -2), Size = UDim2.fromOffset(16, 16), ZIndex = 5, Parent = Main })
-    for i, w in ipairs({ 10, 5 }) do
-        New("Frame", {
-            Size = UDim2.fromOffset(w, 1), AnchorPoint = Vector2.new(1, 1), Rotation = -45,
-            Position = UDim2.new(1, -2 - (i == 2 and 0 or 0), 1, -4 - (i - 1) * 0), Theme = { BackgroundColor3 = "Outline" }, ZIndex = 5, Parent = grip,
-        })
-    end
-    local rs, rsize, rpos
-    Drag(grip, function(i)
-        local d = i.Position - rs
-        local nx = math.max(520, rsize.X + d.X)
-        local ny = math.max(360, rsize.Y + d.Y)
-        Root.Size = UDim2.fromOffset(nx, ny)
-        Root.Position = UDim2.new(rpos.X.Scale, rpos.X.Offset + (nx - rsize.X) / 2, rpos.Y.Scale, rpos.Y.Offset + (ny - rsize.Y) / 2)
-    end, function(i)
-        rs = i.Position; rsize = Vector2.new(Root.Size.X.Offset, Root.Size.Y.Offset); rpos = Root.Position
-    end)
-
-    -- botão flutuante (mobile)
-    if IsMobile then
-        local fb = New("TextButton", {
-            AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 12), Size = UDim2.fromOffset(44, 44),
-            BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Panel" }, Text = string.sub(W.Name, 1, 1), FontFace = Fonts.Bold, TextSize = 18, Parent = Gui,
-        })
-        Corner(fb, 99); Stroke(fb)
-        fb.MouseButton1Click:Connect(function() W:SetOpen(not W.IsOpen) end)
-    end
-
-    return W
-end
-
-function WindowClass:SetOpen(b)
-    self.IsOpen = b
-    Library:HidePopup()
-    if b then
-        self.Root.Visible = true
-        self.Scale.Scale = 0.94
-        Tw(self.Scale, 0.2, { Scale = 1 }, Enum.EasingStyle.Quint)
-    else
-        Tw(self.Scale, 0.15, { Scale = 0.94 })
-        task.delay(0.15, function()
-            if not self.IsOpen then self.Root.Visible = false end
-        end)
-    end
-end
-
-function WindowClass:Category(name)
-    New("TextLabel", {
-        Text = string.upper(name), TextSize = 10, FontFace = Fonts.Bold, Theme = { TextColor3 = "SubText" },
-        Size = UDim2.new(1, 0, 0, 22), TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = #self.Pages + 1, Parent = self.Tabs,
-    })
-end
-
-function WindowClass:Select(page)
-    for _, p in ipairs(self.Pages) do
-        local on = p == page
-        if on and not p.Active then
-            p.Frame.Position = UDim2.fromOffset(0, 14)
-            Tw(p.Frame, 0.3, { Position = UDim2.new() }, Enum.EasingStyle.Quint)
-        end
-        p.Frame.Visible = on
-        p.Active = on
-        Tw(p.Tab, 0.18, { BackgroundTransparency = on and 0 or 1 })
-        Tw(p.TabText, 0.18, { TextColor3 = on and Library.Theme.Text or Library.Theme.SubText })
-        Tw(p.Indicator, 0.18, { BackgroundTransparency = on and 0 or 1 })
-        if p.TabIcon then Tw(p.TabIcon, 0.18, { ImageColor3 = on and Library.Theme.Accent or Library.Theme.SubText }) end
-    end
-    Library:HidePopup()
-end
-
-function WindowClass:Init() end
-function WindowClass:SetCenter() self.Root.Position = UDim2.fromScale(0.5, 0.5) end
-
---------------------------------------------------------------------------------
--- Page
---------------------------------------------------------------------------------
-function WindowClass:Page(Data)
-    Data = Data or {}
-    local P = setmetatable({
-        Window = self, Name = G(Data, "Name", "name") or "Page", Columns = G(Data, "Columns", "columns") or 2,
-        Sections = {}, ColumnFrames = {}, Active = false,
-    }, PageClass)
-    local icon = G(Data, "Icon", "icon")
-
-    local tab = New("TextButton", { Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1, BackgroundColor3 = Color3.new(1, 1, 1), LayoutOrder = #self.Pages + 1, Parent = self.Tabs })
-    Corner(tab, 8)
-    local tabGrad = Grad(tab, 0)
-    tabGrad.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.72), NumberSequenceKeypoint.new(1, 1) })
-    local ind = New("Frame", { Size = UDim2.fromOffset(3, 16), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, 0.5, 0), BackgroundTransparency = 1, BackgroundColor3 = Color3.new(1, 1, 1), Parent = tab })
-    Corner(ind, 2); Grad(ind, 90)
-    local tx = 14
-    if icon then
-        P.TabIcon = New("ImageLabel", { Image = "rbxassetid://" .. tostring(icon), Size = UDim2.fromOffset(16, 16), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 12, 0.5, 0), ImageColor3 = Library.Theme.SubText, Parent = tab })
-        tx = 36
-    end
-    P.TabText = New("TextLabel", { Text = P.Name, FontFace = Fonts.SemiBold, Position = UDim2.fromOffset(tx, 0), Size = UDim2.new(1, -tx, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Theme = { TextColor3 = "SubText" }, Parent = tab })
-    P.Tab, P.Indicator = tab, ind
-
-    tab.MouseEnter:Connect(function() if not P.Active then Tw(P.TabText, 0.12, { TextColor3 = Library.Theme.Text }) end end)
-    tab.MouseLeave:Connect(function() if not P.Active then Tw(P.TabText, 0.12, { TextColor3 = Library.Theme.SubText }) end end)
-    tab.MouseButton1Click:Connect(function() self:Select(P) end)
-
-    P.Frame = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Visible = false, Parent = self.Content })
-    New("TextLabel", { Text = P.Name, FontFace = Fonts.Bold, TextSize = 18, Position = UDim2.fromOffset(22, 12), Size = UDim2.new(0.7, 0, 0, 22), TextXAlignment = Enum.TextXAlignment.Left, Parent = P.Frame })
-    local desc = G(Data, "Description", "description")
-    if desc then
-        New("TextLabel", { Text = desc, TextSize = 12, Theme = { TextColor3 = "SubText" }, Position = UDim2.fromOffset(22, 34), Size = UDim2.new(0.8, 0, 0, 14), TextXAlignment = Enum.TextXAlignment.Left, Parent = P.Frame })
-    end
-    local top = desc and 58 or 46
-    P.Cols = New("Frame", { Position = UDim2.fromOffset(0, top), Size = UDim2.new(1, 0, 1, -top), BackgroundTransparency = 1, Parent = P.Frame })
-    Pad(P.Cols, 12, 0, 12, 12)
-    New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 10), SortOrder = Enum.SortOrder.LayoutOrder, Parent = P.Cols })
-    local n = P.Columns
-    for i = 1, n do
-        local col = New("ScrollingFrame", {
-            Size = UDim2.new(1 / n, -(10 * (n - 1)) / n, 1, 0), LayoutOrder = i, Parent = P.Cols,
-        })
-        List(col, 10); Pad(col, 0, 0, 4, 0)
-        P.ColumnFrames[i] = col
-    end
-
-    table.insert(self.Pages, P)
-    if #self.Pages == 1 then self:Select(P) end
-    return P
-end
-
---------------------------------------------------------------------------------
--- Section
---------------------------------------------------------------------------------
-function PageClass:Section(Data)
-    Data = Data or {}
-    local S = setmetatable({
-        Window = self.Window, Page = self,
-        Name = G(Data, "Name", "name") or "Section",
-        Description = G(Data, "Description", "description") or "",
-        Enabled = true,
-    }, SectionClass)
-    local side = math.clamp(G(Data, "Side", "side") or 1, 1, self.Columns)
-    local enableToggle = G(Data, "EnableToggle", "enabletoggle") or false
-
-    local frame = New("Frame", { Size = UDim2.new(1, 0, 0, 36), AutomaticSize = Enum.AutomaticSize.Y, Theme = { BackgroundColor3 = "Panel" }, LayoutOrder = #self.Sections + 1, Parent = self.ColumnFrames[side] })
-    Corner(frame, 8); Stroke(frame)
-    New("UIGradient", { Rotation = 90, Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(215, 215, 228)), Parent = frame })
-
-    local header = New("Frame", { Size = UDim2.new(1, 0, 0, 36), BackgroundTransparency = 1, Parent = frame })
-    local dot = New("Frame", { Size = UDim2.fromOffset(4, 14), Position = UDim2.fromOffset(12, 11), BackgroundColor3 = Color3.new(1, 1, 1), Parent = header })
-    Corner(dot, 2); Grad(dot, 90); Glow(dot, "Accent", 18, 0.6)
-    New("TextLabel", { Text = S.Name, FontFace = Fonts.SemiBold, Position = UDim2.fromOffset(26, 0), Size = UDim2.new(0.6, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = header })
-    if S.Description ~= "" then
-        New("TextLabel", { Text = S.Description, TextSize = 11, Theme = { TextColor3 = "SubText" }, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, enableToggle and -54 or -12, 0, 0), Size = UDim2.new(0.4, 0, 1, 0), TextXAlignment = Enum.TextXAlignment.Right, TextTruncate = Enum.TextTruncate.AtEnd, Parent = header })
-    end
-    local dv = New("Frame", { Size = UDim2.new(1, -20, 0, 1), Position = UDim2.fromOffset(10, 35), BackgroundColor3 = Color3.new(1, 1, 1), Parent = header })
-    Grad(dv, 0).Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(0.6, 0.85), NumberSequenceKeypoint.new(1, 1) })
-
-    S.Content = New("Frame", { Position = UDim2.fromOffset(0, 36), Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = frame })
-    List(S.Content, 6); Pad(S.Content, 12, 10, 12, 12)
-
-    if enableToggle then
-        local overlay = New("TextButton", { Position = UDim2.fromOffset(0, 36), Size = UDim2.new(1, 0, 1, -36), BackgroundTransparency = 0.35, Theme = { BackgroundColor3 = "Panel" }, Visible = false, Active = true, Parent = frame })
-        local sw = New("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(34, 18), Theme = { BackgroundColor3 = "Element" }, BackgroundTransparency = 0, Parent = header })
-        Corner(sw, 9); Stroke(sw)
-        local fill = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), Parent = sw })
-        Corner(fill, 9); Grad(fill)
-        local knob = New("Frame", { Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(1, -15, 0.5, 0), BackgroundColor3 = Color3.new(1, 1, 1), Parent = sw })
-        Corner(knob, 99)
-        sw.MouseButton1Click:Connect(function()
-            S.Enabled = not S.Enabled
-            overlay.Visible = not S.Enabled
-            Tw(fill, 0.18, { BackgroundTransparency = S.Enabled and 0 or 1 })
-            Tw(knob, 0.18, { Position = S.Enabled and UDim2.new(1, -15, 0.5, 0) or UDim2.new(0, 3, 0.5, 0), BackgroundColor3 = S.Enabled and Color3.new(1, 1, 1) or Library.Theme.SubText })
-        end)
-    end
-
-    self.Sections[#self.Sections + 1] = S
-    return S
-end
-
---------------------------------------------------------------------------------
--- Elementos
---------------------------------------------------------------------------------
-function SectionClass:Divider()
-    New("Frame", { Size = UDim2.new(1, 0, 0, 1), Theme = { BackgroundColor3 = "Outline" }, Parent = self.Content })
-end
-
-function SectionClass:Label(text)
-    local L = {}
-    local row = New("Frame", { Size = UDim2.new(1, 0, 0, 22), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, Parent = self.Content })
-    local lbl = New("TextLabel", {
-        Text = tostring(text or "Label"), TextWrapped = true, Size = UDim2.new(1, 0, 0, 22), AutomaticSize = Enum.AutomaticSize.Y,
-        TextXAlignment = Enum.TextXAlignment.Left, Theme = { TextColor3 = "SubText" }, Parent = row,
-    })
-    local function EnsureRB()
-        if not L.RB then
-            L.RB = RightBox(row)
-            lbl.Size = UDim2.new(1, -90, 0, 22)
-        end
-        return L.RB
-    end
-    function L:SetText(t) lbl.Text = tostring(t) end
-    function L:SetVisibility(b) row.Visible = b end
-    function L:Colorpicker(Data) return CreateColorpicker(EnsureRB(), Data or {}) end
-    function L:Keybind(Data) Data = Data or {}; Data.Name = Data.Name or lbl.Text; return CreateKeybind(EnsureRB(), Data) end
-    return L
-end
-
-function SectionClass:Colorpicker(Data)
-    Data = Data or {}
-    local l = self:Label(G(Data, "Name", "name") or "Color")
-    return l:Colorpicker(Data)
-end
-
-function SectionClass:Keybind(Data)
-    Data = Data or {}
-    local l = self:Label(G(Data, "Name", "name") or "Keybind")
-    return l:Keybind(Data)
-end
-
-function SectionClass:Toggle(Data)
-    Data = Data or {}
-    local T = {
-        Name = G(Data, "Name", "name") or "Toggle", Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Callback = G(Data, "Callback", "callback") or function() end, Value = false,
-    }
-    local row = Row(self, 28)
-    local hit = New("TextButton", { Size = UDim2.fromScale(1, 1), Parent = row })
-    local label = New("TextLabel", { Text = T.Name, Size = UDim2.new(1, -60, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Theme = { TextColor3 = "SubText" }, Parent = row })
-    local rb = RightBox(row)
-    T.RightBox = rb
-    local sw = New("Frame", { Size = UDim2.fromOffset(34, 18), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, LayoutOrder = 100, Parent = rb })
-    Corner(sw, 9); Stroke(sw)
-    local swGlow = Glow(sw, "Accent", 18, 1)
-    local fill = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Parent = sw })
-    Corner(fill, 9); Grad(fill)
-    local knob = New("Frame", { Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0), BackgroundColor3 = Library.Theme.SubText, Parent = sw })
-    Corner(knob, 99)
-
-    function T:Set(v, silent)
-        v = v and true or false
-        self.Value = v
-        Library.Flags[self.Flag] = v
-        Tw(fill, 0.18, { BackgroundTransparency = v and 0 or 1 })
-        Tw(knob, 0.18, { Position = v and UDim2.new(1, -15, 0.5, 0) or UDim2.new(0, 3, 0.5, 0), BackgroundColor3 = v and Color3.new(1, 1, 1) or Library.Theme.SubText })
-        Tw(label, 0.18, { TextColor3 = v and Library.Theme.Text or Library.Theme.SubText })
-        Tw(swGlow, 0.25, { ImageTransparency = v and 0.55 or 1 })
-        if not silent then Library:SafeCall(self.Callback, v) end
-    end
-    function T:Get() return self.Value end
-    function T:SetVisibility(b) row.Visible = b end
-    function T:Colorpicker(d) return CreateColorpicker(rb, d or {}) end
-    function T:Keybind(d) d = d or {}; d.Name = d.Name or T.Name; return CreateKeybind(rb, d) end
-
-    hit.MouseEnter:Connect(function() if not T.Value then Tw(label, 0.12, { TextColor3 = Library.Theme.SubText:Lerp(Library.Theme.Text, 0.55) }) end end)
-    hit.MouseLeave:Connect(function() if not T.Value then Tw(label, 0.12, { TextColor3 = Library.Theme.SubText }) end end)
-    hit.MouseButton1Click:Connect(function() T:Set(not T.Value) end)
-    T:Set(G(Data, "Default", "default") or false)
-    Library.SetFlags[T.Flag] = function(v) T:Set(v) end
-    return T
-end
-
-function SectionClass:Button(Data)
-    Data = Data or {}
-    local B = { Name = G(Data, "Name", "name") or "Button", Callback = G(Data, "Callback", "callback") or function() end }
-    local btn = New("TextButton", { Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, Parent = self.Content })
-    Corner(btn, 6)
-    local btnStroke = Stroke(btn)
-    local glow = New("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 1, Parent = btn })
-    Corner(glow, 6); Grad(glow)
-    local txt = New("TextLabel", { Text = B.Name, Size = UDim2.fromScale(1, 1), Theme = { TextColor3 = "SubText" }, Parent = btn })
-    btn.MouseEnter:Connect(function()
-        Tw(glow, 0.15, { BackgroundTransparency = 0.82 }); Tw(txt, 0.15, { TextColor3 = Library.Theme.Text })
-        Tw(btnStroke, 0.15, { Color = Library.Theme.Accent })
-    end)
-    btn.MouseLeave:Connect(function()
-        Tw(glow, 0.15, { BackgroundTransparency = 1 }); Tw(txt, 0.15, { TextColor3 = Library.Theme.SubText })
-        Tw(btnStroke, 0.15, { Color = Library.Theme.Outline })
-    end)
-    function B:Press()
-        Tw(glow, 0.06, { BackgroundTransparency = 0.45 })
-        task.delay(0.08, function() Tw(glow, 0.2, { BackgroundTransparency = 0.82 }) end)
-        Library:SafeCall(self.Callback)
-    end
-    function B:SetVisibility(b) btn.Visible = b end
-    btn.MouseButton1Click:Connect(function() B:Press() end)
-    return B
-end
-
-function SectionClass:Slider(Data)
-    Data = Data or {}
-    local S = {
-        Name = G(Data, "Name", "name") or "Slider", Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Min = G(Data, "Min", "min") or 0, Max = G(Data, "Max", "max") or 100, Suffix = G(Data, "Suffix", "suffix") or "",
-        Step = G(Data, "Step", "step", "Decimals", "decimals") or 1,
-        Callback = G(Data, "Callback", "callback") or function() end, Value = nil,
-    }
-    local digits = 0
-    do local d = tostring(S.Step):match("%.(%d+)"); if d then digits = #d end end
-
-    local row = Row(self, 40)
-    New("TextLabel", { Text = S.Name, Size = UDim2.new(0.65, 0, 0, 18), TextXAlignment = Enum.TextXAlignment.Left, Theme = { TextColor3 = "SubText" }, Parent = row })
-    local pill = New("Frame", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.new(0, 0, 0, 18), AutomaticSize = Enum.AutomaticSize.X, Theme = { BackgroundColor3 = "Element" }, Parent = row })
-    Corner(pill, 5); Pad(pill, 8, 0, 8, 0)
-    local valLbl = New("TextLabel", { Size = UDim2.new(0, 0, 1, 0), AutomaticSize = Enum.AutomaticSize.X, TextSize = 12, Parent = pill })
-    local track = New("Frame", { Position = UDim2.fromOffset(0, 26), Size = UDim2.new(1, 0, 0, 6), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, Parent = row })
-    Corner(track, 99)
-    local fill = New("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = Color3.new(1, 1, 1), Parent = track })
-    Corner(fill, 99); Grad(fill)
-    local knob = New("Frame", { Size = UDim2.fromOffset(12, 12), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), Parent = track })
-    Corner(knob, 99); New("UIStroke", { Color = Library.Theme.Accent, Thickness = 2, Parent = knob })
-    local hit = New("TextButton", { Position = UDim2.fromOffset(0, 16), Size = UDim2.new(1, 0, 0, 24), Parent = row })
-    hit.MouseEnter:Connect(function() Tw(knob, 0.12, { Size = UDim2.fromOffset(15, 15) }) end)
-    hit.MouseLeave:Connect(function() Tw(knob, 0.12, { Size = UDim2.fromOffset(12, 12) }) end)
-
-    function S:Set(v, silent)
-        v = tonumber(v)
-        if not v then return end
-        v = self.Min + math.floor((v - self.Min) / self.Step + 0.5) * self.Step
-        v = math.clamp(v, self.Min, self.Max)
-        v = tonumber(string.format("%." .. digits .. "f", v))
-        local first = self.Value == nil
-        local changed = v ~= self.Value
-        self.Value = v
-        Library.Flags[self.Flag] = v
-        local a = (self.Max == self.Min) and 0 or (v - self.Min) / (self.Max - self.Min)
-        Tw(fill, 0.08, { Size = UDim2.fromScale(a, 1) })
-        Tw(knob, 0.08, { Position = UDim2.fromScale(a, 0.5) })
-        valLbl.Text = string.format("%." .. digits .. "f%s", v, self.Suffix)
-        if (changed or first) and not silent then Library:SafeCall(self.Callback, v) end
-    end
-    function S:Get() return self.Value end
-    function S:SetVisibility(b) row.Visible = b end
-
-    Drag(hit, function(i)
-        local a = math.clamp((i.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        S:Set(S.Min + a * (S.Max - S.Min))
-    end, function() Tw(knob, 0.12, { Size = UDim2.fromOffset(16, 16) }) end,
-        function() Tw(knob, 0.12, { Size = UDim2.fromOffset(12, 12) }) end)
-
-    S:Set(G(Data, "Default", "default") or S.Min)
-    Library.SetFlags[S.Flag] = function(v) S:Set(v) end
-    return S
-end
-
-function SectionClass:Dropdown(Data)
-    Data = Data or {}
-    local D = {
-        Name = G(Data, "Name", "name") or "Dropdown", Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Callback = G(Data, "Callback", "callback") or function() end, Multi = G(Data, "Multi", "multi") or false,
-    }
-    local width = G(Data, "Size", "size") or 150
-
-    local row = Row(self, 30)
-    New("TextLabel", { Text = D.Name, Size = UDim2.new(1, -width - 10, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Theme = { TextColor3 = "SubText" }, Parent = row })
-    local btn = New("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(width, 26), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, Parent = row })
-    Corner(btn, 6); Stroke(btn)
-    local valLbl = New("TextLabel", { Text = "...", Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -32, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = btn })
-    local chev = Chevron(btn, Library.Theme.SubText)
-    chev.Position = UDim2.new(1, -16, 0.5, 0)
-
-    local popup, panel = MakePopup(width, 40)
-    local scroll = New("ScrollingFrame", { Position = UDim2.fromOffset(4, 4), Size = UDim2.new(1, -8, 1, -8), Parent = panel })
-    List(scroll, 2)
-
-    local function Resize() popup.Size = UDim2.fromOffset(width, math.min(#D.List.Order * 26 + 6, 176)) end
-
-    local function Text(v)
-        if D.Multi then return (#v > 0) and table.concat(v, ", ") or "..." end
-        return v or "..."
-    end
-
-    D.List = OptionList(scroll, D.Multi, function(v, silent)
-        D.Value = v
-        Library.Flags[D.Flag] = D.Multi and table.clone(v) or v
-        valLbl.Text = Text(v)
-        if not silent then Library:SafeCall(D.Callback, v) end
-    end)
-    D.List.OnPick = function() if not D.Multi then Library:HidePopup() end end
-
-    for _, it in ipairs(G(Data, "Items", "items") or { "One", "Two", "Three" }) do D.List:Add(it) end
-    Resize()
-
-    function D:Get() return self.Value end
-    function D:Set(v, silent) self.List:Set(v, silent) end
-    function D:Add(o) self.List:Add(o); Resize() end
-    function D:Remove(o)
-        local op = self.List.Options[o]
-        if op then
-            op.Button:Destroy(); self.List.Options[o] = nil
-            table.remove(self.List.Order, table.find(self.List.Order, o))
-            Resize()
-        end
-    end
-    function D:Refresh(list, default)
-        self.List:Clear()
-        for _, it in ipairs(list) do self.List:Add(it) end
-        Resize()
-        self.List:Set(default, true)
-        if default == nil then
-            Library.Flags[self.Flag] = D.Multi and {} or nil
-            valLbl.Text = "..."
-        end
-    end
-    function D:SetVisibility(b) row.Visible = b end
-
-    btn.MouseButton1Click:Connect(function()
-        if Library.ActivePopup and Library.ActivePopup.Frame == popup then
-            Library:HidePopup()
-        else
-            Library:ShowPopup(popup, btn, true, function() Tw(chev, 0.15, { Rotation = 0 }) end)
-            Tw(chev, 0.15, { Rotation = 180 })
-        end
-    end)
-
-    local def = G(Data, "Default", "default")
-    if def ~= nil then D:Set(def, true) end
-    if def ~= nil then Library:SafeCall(D.Callback, D.Value) end
-    Library.SetFlags[D.Flag] = function(v) D:Set(v) end
-    return D
-end
-
-function SectionClass:Listbox(Data)
-    Data = Data or {}
-    local D = {
-        Flag = G(Data, "Flag", "flag") or Library:NextFlag(),
-        Callback = G(Data, "Callback", "callback") or function() end, Multi = G(Data, "Multi", "multi") or false,
-    }
-    local h = G(Data, "Size", "size") or 140
-    local box = New("Frame", { Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, Parent = self.Content })
-    Corner(box, 6); Stroke(box)
-    local search = New("TextBox", { PlaceholderText = "Buscar...", Text = "", ClearTextOnFocus = false, Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 0, 28), TextXAlignment = Enum.TextXAlignment.Left, TextSize = 12, PlaceholderColor3 = Library.Theme.SubText, Parent = box })
-    New("Frame", { Position = UDim2.fromOffset(0, 28), Size = UDim2.new(1, 0, 0, 1), Theme = { BackgroundColor3 = "Outline" }, Parent = box })
-    local scroll = New("ScrollingFrame", { Position = UDim2.fromOffset(4, 33), Size = UDim2.new(1, -8, 1, -37), Parent = box })
-    List(scroll, 2)
-
-    D.List = OptionList(scroll, D.Multi, function(v, silent)
-        D.Value = v
-        Library.Flags[D.Flag] = D.Multi and table.clone(v) or v
-        if not silent then Library:SafeCall(D.Callback, v) end
-    end)
-    for _, it in ipairs(G(Data, "Items", "items") or {}) do D.List:Add(it) end
-    search:GetPropertyChangedSignal("Text"):Connect(function() D.List:Filter(search.Text) end)
-
-    function D:Get() return self.Value end
-    function D:Set(v, silent) self.List:Set(v, silent) end
-    function D:Add(o) self.List:Add(o) end
-    function D:Refresh(list)
-        self.List:Clear()
-        for _, it in ipairs(list) do self.List:Add(it) end
-        self.Value = D.Multi and {} or nil
-    end
-    function D:SetVisibility(b) box.Visible = b end
-
-    local def = G(Data, "Default", "default")
-    if def ~= nil then D:Set(def, true) end
-    Library.SetFlags[D.Flag] = function(v) D:Set(v) end
-    return D
-end
-
-function SectionClass:Textbox(Data)
-    Data = Data or {}
-    local T = {
-        Flag = G(Data, "Flag", "flag") or Library:NextFlag(), Callback = G(Data, "Callback", "callback") or function() end,
-        Numeric = G(Data, "Numeric", "numeric") or false, Finished = G(Data, "Finished", "finished") or false, Value = "",
-    }
-    local frame = New("Frame", { Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 0, Theme = { BackgroundColor3 = "Element" }, Parent = self.Content })
-    Corner(frame, 6)
-    local stroke = Stroke(frame)
-    local input = New("TextBox", {
-        Text = "", ClearTextOnFocus = false, PlaceholderText = G(Data, "Placeholder", "placeholder") or "Digite...", PlaceholderColor3 = Library.Theme.SubText,
-        Position = UDim2.fromOffset(10, 0), Size = UDim2.new(1, -20, 1, 0), TextXAlignment = Enum.TextXAlignment.Left, Parent = frame,
-    })
-    input.Focused:Connect(function() Tw(stroke, 0.15, { Color = Library.Theme.Accent }) end)
-    input.FocusLost:Connect(function(enter)
-        Tw(stroke, 0.15, { Color = Library.Theme.Outline })
-        if T.Finished and enter then T:Set(input.Text) end
-    end)
-
-    function T:Set(v, silent)
-        v = tostring(v or "")
-        if self.Numeric and v ~= "" and not tonumber(v) then v = self.Value end
-        self.Value = v
-        input.Text = v
-        Library.Flags[self.Flag] = v
-        if not silent then Library:SafeCall(self.Callback, v) end
-    end
-    function T:Get() return self.Value end
-    function T:SetVisibility(b) frame.Visible = b end
-
-    if not T.Finished then
-        input:GetPropertyChangedSignal("Text"):Connect(function()
-            if input.Text ~= T.Value then T:Set(input.Text) end
-        end)
-    end
-    local def = G(Data, "Default", "default")
-    if def then T:Set(def, true) end
-    Library.SetFlags[T.Flag] = function(v) T:Set(v) end
-    return T
-end
-
---------------------------------------------------------------------------------
--- Página de configurações pronta
---------------------------------------------------------------------------------
-function Library:CreateSettingsPage(Window, KeybindList)
-    local Page = Window:Page({ Name = "Settings", Columns = 2 })
-    local sel
-
-    local cfg = Page:Section({ Name = "Configs", Description = "Salvar / carregar", Side = 1 })
-    local list = cfg:Listbox({ Flag = "ConfigsList", Size = 130, Callback = function(v) sel = v end })
-    local nameBox = cfg:Textbox({ Flag = "ConfigsName", Placeholder = "Nome da config" })
-
-    local function Path(n) return Library.Folders.Configs .. "/" .. n end
-    cfg:Button({ Name = "Criar", Callback = function()
-        local n = Library.Flags["ConfigsName"]
-        if not FS() then return Library:Notification({ Title = "Configs", Description = "Executor sem suporte a arquivos.", Duration = 3 }) end
-        if n and n ~= "" then
-            if not n:find("%.json$") then n = n .. ".json" end
-            writefile(Path(n), Library:GetConfig())
-            Library:RefreshConfigsList(list)
-            Library:Notification({ Title = "Config criada", Description = n, Duration = 3 })
-        end
-    end })
-    cfg:Button({ Name = "Carregar", Callback = function()
-        if FS() and sel and isfile(Path(sel)) then
-            Library:LoadConfig(readfile(Path(sel)))
-            Library:Notification({ Title = "Config carregada", Description = sel, Duration = 3 })
-        end
-    end })
-    cfg:Button({ Name = "Salvar", Callback = function()
-        if FS() and sel and isfile(Path(sel)) then
-            writefile(Path(sel), Library:GetConfig())
-            Library:Notification({ Title = "Config salva", Description = sel, Duration = 3 })
-        end
-    end })
-    cfg:Button({ Name = "Deletar", Callback = function()
-        if FS() and sel and isfile(Path(sel)) then
-            delfile(Path(sel)); sel = nil
-            Library:RefreshConfigsList(list)
-        end
-    end })
-    cfg:Button({ Name = "Atualizar lista", Callback = function() Library:RefreshConfigsList(list) end })
-    Library:RefreshConfigsList(list)
-
-    local ui = Page:Section({ Name = "Interface", Description = "Visual e atalhos", Side = 2 })
-    ui:Toggle({ Name = "Watermark", Flag = "WatermarkToggle", Callback = function(v)
-        if Library.WatermarkFrame then Library.WatermarkFrame.Visible = v end
-    end })
-    ui:Toggle({ Name = "Lista de keybinds", Flag = "KeybindListToggle", Callback = function(v)
-        if KeybindList then KeybindList:SetVisibility(v) end
-    end })
-    ui:Keybind({ Name = "Tecla do menu", Flag = "MenuBind", Default = Enum.KeyCode.Insert, ShowInList = false, Changed = function(k)
-        Library.MenuKey = k
-    end })
-    local themeDD = ui:Dropdown({ Name = "Tema", Flag = "ThemePreset", Items = Library.PresetNames, Callback = function(n) Library:ApplyPreset(n) end })
-    themeDD:Set("Nova", true)
-    ui:Label("Cor principal"):Colorpicker({ Flag = "AccentColor", Default = Library.Theme.Accent, Callback = function(c) Library:ChangeTheme("Accent", c) end })
-    ui:Label("Cor secundária"):Colorpicker({ Flag = "AccentGradientColor", Default = Library.Theme.AccentGradient, Callback = function(c) Library:ChangeTheme("AccentGradient", c) end })
-    ui:Button({ Name = "Descarregar UI", Callback = function() Library:Unload() end })
-
-    return Page
-end
-
-if getgenv then getgenv().NovaLib = Library end
-return Library
+
+export type Listbox = {
+	Name: string,
+	Option: boolean,
+	Multi: boolean,
+	Position: string,
+	Flag: string | nil,
+	Height: number,
+	Default: ValueBase,
+	Values: {ValueBase},
+	Callback: (values: {ValueBase}) -> any
+}
+
+export type Elements = {
+	AddToggle: (self,Config: Toggle) -> {
+		Option: Elements	
+	},
+	AddSlider: (self,Config: Slider) -> {
+		Option: Elements	
+	},
+	AddButton: (self,Config: Button) -> {},
+	AddColorPicker: (self,Config: ColorPicker) -> {
+		Option: Elements	
+	},
+	AddDropdown: (self,Config: Dropdown) -> {
+		Option: Elements	
+	},
+	AddKeybind: (self,Config: Keybind) -> {
+		Option: Elements	
+	},
+}
+
+export type Preview = {
+	Position: string,
+	Height: number
+}
+
+export type Toggle = {
+	Name: string,
+	Default: boolean,
+	Callback: (boolean) -> any,
+	Risky: boolean,
+	Option: boolean,
+	Flag: string | nil,
+}
+
+export type Slider = {
+	Name: string,
+	Default: number,
+	Min: number,
+	Max: number,
+	Round: number,
+	Type: string,
+	Callback: (number) -> any,
+	Risky: boolean,
+	Flag: string | nil,
+	Option: boolean
+}
+
+export type Button = {
+	Name: string,
+	Callback: (number) -> any,
+	Risky: boolean,
+}
+
+export type ColorPicker = {
+	Name: string,
+	Default: Color3,
+	Transparency: number,
+	Callback: (number) -> any,
+	Flag: string | nil,
+	Option: boolean
+}
+
+export type Dropdown = {
+	Name: string,
+	Default: string | {string},
+	Values: {string},
+	Callback: (string | {string}) -> any,
+	Option: boolean,
+	Multi: boolean,
+	Flag: string | nil,
+	AutoUpdate: boolean
+}
+
+export type Keybind = {
+	Name: string,
+	Default: string | Enum.KeyCode,
+	Callback: (string) -> any,
+	Flag: string | nil,
+	Option: boolean,
+}
+
+export type Notify = {
+	Title: string,
+	Content: string,
+	Duration: number,
+	Flag: string | nil,
+	Icon: string
+}
+
+export type Notifier = {
+	Notify: (self, Config: Notify) -> nil
+}
+
+-- Exploit Environments --
+cloneref = cloneref or function(i) return i; end;
+clonefunction = clonefunction or function(...) return ...; end;
+hookfunction = hookfunction or function(a,b) return a; end;
+getgenv = getgenv or getfenv;
+protect_gui = protect_gui or protectgui or (syn and syn.protect_gui) or function() end;
+getgenv().LPH_NO_VIRTUALIZE = LPH_NO_VIRTUALIZE or function(f) return f end;
+
+if game:GetService('RunService'):IsStudio() then
+	local BaseWorkspace = Instance.new('Folder',game:GetService("ReplicatedFirst"));
+
+	BaseWorkspace.Name = "WORKSPACE";
+
+	local __get_path_c = function(path)
+		return (string.find(path,'/',1,true) and string.split(path,'/')) or (string.find(path,'\\',1,true) and string.split(path,'\\')) or {path};
+	end
+
+	local __get_path = function(path)
+		local main = __get_path_c(path);
+
+		local block = BaseWorkspace;
+
+		for i,v in next , main do
+			block = block[v];
+		end;
+
+		return block;
+	end;
+
+	getgenv().readfile = function(path)
+		local path : StringValue = __get_path(path);
+
+		return path.Value;
+	end;
+
+	getgenv().isfile = function(path)
+		local success , message = pcall(function()
+			return __get_path(path);
+		end);
+
+		if success and not message:IsA("Folder") then
+			return true;
+		end;
+
+		return false;
+	end;
+
+	getgenv().isfolder = function(path)
+		local success , message = pcall(function()
+			return __get_path(path);
+		end);
+
+		if success and message:IsA("Folder") then
+			return true;
+		end;
+
+		return false;
+	end;
+
+	getgenv().writefile = function(path,content)
+		local main = __get_path_c(path);
+
+		local block = BaseWorkspace;
+
+		for i,v in next , main do
+			local item = block:FindFirstChild(v);
+			if not item then
+				local c = Instance.new('StringValue',block);
+
+				c.Name = tostring(v);
+				c.Value = content;
+			else
+				if item:IsA('StringValue') and tostring(item) == v then
+					item.Name = tostring(v);
+					item.Value = content;
+				end;
+
+				block = item;
+			end;
+		end;
+	end;
+
+	getgenv().listfiles = function(path)
+		local fold = __get_path(path);
+		local pa = {};
+
+		for i,v in next , fold:GetChildren() do
+			if v:IsA('StringValue') then
+				table.insert(pa,path..'/'..tostring(v));
+			end;
+		end;
+
+		return pa;
+	end;
+
+	getgenv().makefolder = function(path)
+		local main = __get_path_c(path);
+
+		local block = BaseWorkspace;
+
+		for i,v in next , main do
+			local item = block:FindFirstChild(v);
+			if not item then
+				local c = Instance.new('Folder',block);
+
+				c.Name = tostring(v);
+			else
+				block = item;
+			end;
+		end;
+	end;
+
+	getgenv().delfile = function(path)
+		local main = __get_path_c(path);
+
+		local block = BaseWorkspace;
+
+		for i,v in next , main do
+			local item = block:FindFirstChild(v);
+			if item and item:IsA('StringValue') then
+				item:Destroy();
+			else
+				block = item;
+			end;
+		end;
+	end;
+end;
+
+-- Services --
+local TextService = cloneref(game:GetService('TextService'));
+local TweenService = cloneref(game:GetService('TweenService'));
+local RunService = cloneref(game:GetService('RunService'));
+local Players = cloneref(game:GetService('Players'));
+local UserInputService = cloneref(game:GetService('UserInputService'));
+local Client = Players.LocalPlayer;
+local Mouse = Client:GetMouse();
+local CurrentCamera = workspace.CurrentCamera;
+local _,CoreGui = xpcall(function()
+	return (gethui and gethui()) or game:GetService("CoreGui"):FindFirstChild("RobloxGui");
+end,function()
+	return Client.PlayerGui;
+end);
+
+-- Sunset --
+local Sunset = {};
+
+Sunset.Ascii = "qwertyuiopasdfghjklzxcvbnmQWRTYUIOPASDFGHJKLZXCVBNM";
+Sunset.GLOBAL_ENVIRONMENT = {};
+Sunset.Windows = {};
+Sunset.FontSemiBold = Font.new('rbxasset://fonts/families/GothamSSm.json',Enum.FontWeight.SemiBold,Enum.FontStyle.Normal);
+Sunset.Flags = {};
+Sunset.Colors = {
+	Black = Color3.fromRGB(16, 16, 16),
+	Main = Color3.fromRGB(255, 106, 133)
+};
+Sunset.DragBlacklist = {};
+Sunset.Version = '1.6';
+Sunset.Lucide = {
+	["lucide-accessibility"] = "rbxassetid://10709751939",
+	["lucide-activity"] = "rbxassetid://10709752035",
+	["lucide-air-vent"] = "rbxassetid://10709752131",
+	["lucide-airplay"] = "rbxassetid://10709752254",
+	["lucide-alarm-check"] = "rbxassetid://10709752405",
+	["lucide-alarm-clock"] = "rbxassetid://10709752630",
+	["lucide-alarm-clock-off"] = "rbxassetid://10709752508",
+	["lucide-alarm-minus"] = "rbxassetid://10709752732",
+	["lucide-alarm-plus"] = "rbxassetid://10709752825",
+	["lucide-album"] = "rbxassetid://10709752906",
+	["lucide-alert-circle"] = "rbxassetid://10709752996",
+	["lucide-alert-octagon"] = "rbxassetid://10709753064",
+	["lucide-alert-triangle"] = "rbxassetid://10709753149",
+	["lucide-align-center"] = "rbxassetid://10709753570",
+	["lucide-align-center-horizontal"] = "rbxassetid://10709753272",
+	["lucide-align-center-vertical"] = "rbxassetid://10709753421",
+	["lucide-align-end-horizontal"] = "rbxassetid://10709753692",
+	["lucide-align-end-vertical"] = "rbxassetid://10709753808",
+	["lucide-align-horizontal-distribute-center"] = "rbxassetid://10747779791",
+	["lucide-align-horizontal-distribute-end"] = "rbxassetid://10747784534",
+	["lucide-align-horizontal-distribute-start"] = "rbxassetid://10709754118",
+	["lucide-align-horizontal-justify-center"] = "rbxassetid://10709754204",
+	["lucide-align-horizontal-justify-end"] = "rbxassetid://10709754317",
+	["lucide-align-horizontal-justify-start"] = "rbxassetid://10709754436",
+	["lucide-align-horizontal-space-around"] = "rbxassetid://10709754590",
+	["lucide-align-horizontal-space-between"] = "rbxassetid://10709754749",
+	["lucide-align-justify"] = "rbxassetid://10709759610",
+	["lucide-align-left"] = "rbxassetid://10709759764",
+	["lucide-align-right"] = "rbxassetid://10709759895",
+	["lucide-align-start-horizontal"] = "rbxassetid://10709760051",
+	["lucide-align-start-vertical"] = "rbxassetid://10709760244",
+	["lucide-align-vertical-distribute-center"] = "rbxassetid://10709760351",
+	["lucide-align-vertical-distribute-end"] = "rbxassetid://10709760434",
+	["lucide-align-vertical-distribute-start"] = "rbxassetid://10709760612",
+	["lucide-align-vertical-justify-center"] = "rbxassetid://10709760814",
+	["lucide-align-vertical-justify-end"] = "rbxassetid://10709761003",
+	["lucide-align-vertical-justify-start"] = "rbxassetid://10709761176",
+	["lucide-align-vertical-space-around"] = "rbxassetid://10709761324",
+	["lucide-align-vertical-space-between"] = "rbxassetid://10709761434",
+	["lucide-anchor"] = "rbxassetid://10709761530",
+	["lucide-angry"] = "rbxassetid://10709761629",
+	["lucide-annoyed"] = "rbxassetid://10709761722",
+	["lucide-aperture"] = "rbxassetid://10709761813",
+	["lucide-apple"] = "rbxassetid://10709761889",
+	["lucide-archive"] = "rbxassetid://10709762233",
+	["lucide-archive-restore"] = "rbxassetid://10709762058",
+	["lucide-armchair"] = "rbxassetid://10709762327",
+	["lucide-arrow-big-down"] = "rbxassetid://10747796644",
+	["lucide-arrow-big-left"] = "rbxassetid://10709762574",
+	["lucide-arrow-big-right"] = "rbxassetid://10709762727",
+	["lucide-arrow-big-up"] = "rbxassetid://10709762879",
+	["lucide-arrow-down"] = "rbxassetid://10709767827",
+	["lucide-arrow-down-circle"] = "rbxassetid://10709763034",
+	["lucide-arrow-down-left"] = "rbxassetid://10709767656",
+	["lucide-arrow-down-right"] = "rbxassetid://10709767750",
+	["lucide-arrow-left"] = "rbxassetid://10709768114",
+	["lucide-arrow-left-circle"] = "rbxassetid://10709767936",
+	["lucide-arrow-left-right"] = "rbxassetid://10709768019",
+	["lucide-arrow-right"] = "rbxassetid://10709768347",
+	["lucide-arrow-right-circle"] = "rbxassetid://10709768226",
+	["lucide-arrow-up"] = "rbxassetid://10709768939",
+	["lucide-arrow-up-circle"] = "rbxassetid://10709768432",
+	["lucide-arrow-up-down"] = "rbxassetid://10709768538",
+	["lucide-arrow-up-left"] = "rbxassetid://10709768661",
+	["lucide-arrow-up-right"] = "rbxassetid://10709768787",
+	["lucide-asterisk"] = "rbxassetid://10709769095",
+	["lucide-at-sign"] = "rbxassetid://10709769286",
+	["lucide-award"] = "rbxassetid://10709769406",
+	["lucide-axe"] = "rbxassetid://10709769508",
+	["lucide-axis-3d"] = "rbxassetid://10709769598",
+	["lucide-baby"] = "rbxassetid://10709769732",
+	["lucide-backpack"] = "rbxassetid://10709769841",
+	["lucide-baggage-claim"] = "rbxassetid://10709769935",
+	["lucide-banana"] = "rbxassetid://10709770005",
+	["lucide-banknote"] = "rbxassetid://10709770178",
+	["lucide-bar-chart"] = "rbxassetid://10709773755",
+	["lucide-bar-chart-2"] = "rbxassetid://10709770317",
+	["lucide-bar-chart-3"] = "rbxassetid://10709770431",
+	["lucide-bar-chart-4"] = "rbxassetid://10709770560",
+	["lucide-bar-chart-horizontal"] = "rbxassetid://10709773669",
+	["lucide-barcode"] = "rbxassetid://10747360675",
+	["lucide-baseline"] = "rbxassetid://10709773863",
+	["lucide-bath"] = "rbxassetid://10709773963",
+	["lucide-battery"] = "rbxassetid://10709774640",
+	["lucide-battery-charging"] = "rbxassetid://10709774068",
+	["lucide-battery-full"] = "rbxassetid://10709774206",
+	["lucide-battery-low"] = "rbxassetid://10709774370",
+	["lucide-battery-medium"] = "rbxassetid://10709774513",
+	["lucide-beaker"] = "rbxassetid://10709774756",
+	["lucide-bed"] = "rbxassetid://10709775036",
+	["lucide-bed-double"] = "rbxassetid://10709774864",
+	["lucide-bed-single"] = "rbxassetid://10709774968",
+	["lucide-beer"] = "rbxassetid://10709775167",
+	["lucide-bell"] = "rbxassetid://10709775704",
+	["lucide-bell-minus"] = "rbxassetid://10709775241",
+	["lucide-bell-off"] = "rbxassetid://10709775320",
+	["lucide-bell-plus"] = "rbxassetid://10709775448",
+	["lucide-bell-ring"] = "rbxassetid://10709775560",
+	["lucide-bike"] = "rbxassetid://10709775894",
+	["lucide-binary"] = "rbxassetid://10709776050",
+	["lucide-bitcoin"] = "rbxassetid://10709776126",
+	["lucide-bluetooth"] = "rbxassetid://10709776655",
+	["lucide-bluetooth-connected"] = "rbxassetid://10709776240",
+	["lucide-bluetooth-off"] = "rbxassetid://10709776344",
+	["lucide-bluetooth-searching"] = "rbxassetid://10709776501",
+	["lucide-bold"] = "rbxassetid://10747813908",
+	["lucide-bomb"] = "rbxassetid://10709781460",
+	["lucide-bone"] = "rbxassetid://10709781605",
+	["lucide-book"] = "rbxassetid://10709781824",
+	["lucide-book-open"] = "rbxassetid://10709781717",
+	["lucide-bookmark"] = "rbxassetid://10709782154",
+	["lucide-bookmark-minus"] = "rbxassetid://10709781919",
+	["lucide-bookmark-plus"] = "rbxassetid://10709782044",
+	["lucide-bot"] = "rbxassetid://10709782230",
+	["lucide-box"] = "rbxassetid://10709782497",
+	["lucide-box-select"] = "rbxassetid://10709782342",
+	["lucide-boxes"] = "rbxassetid://10709782582",
+	["lucide-briefcase"] = "rbxassetid://10709782662",
+	["lucide-brush"] = "rbxassetid://10709782758",
+	["lucide-bug"] = "rbxassetid://10709782845",
+	["lucide-building"] = "rbxassetid://10709783051",
+	["lucide-building-2"] = "rbxassetid://10709782939",
+	["lucide-bus"] = "rbxassetid://10709783137",
+	["lucide-cake"] = "rbxassetid://10709783217",
+	["lucide-calculator"] = "rbxassetid://10709783311",
+	["lucide-calendar"] = "rbxassetid://10709789505",
+	["lucide-calendar-check"] = "rbxassetid://10709783474",
+	["lucide-calendar-check-2"] = "rbxassetid://10709783392",
+	["lucide-calendar-clock"] = "rbxassetid://10709783577",
+	["lucide-calendar-days"] = "rbxassetid://10709783673",
+	["lucide-calendar-heart"] = "rbxassetid://10709783835",
+	["lucide-calendar-minus"] = "rbxassetid://10709783959",
+	["lucide-calendar-off"] = "rbxassetid://10709788784",
+	["lucide-calendar-plus"] = "rbxassetid://10709788937",
+	["lucide-calendar-range"] = "rbxassetid://10709789053",
+	["lucide-calendar-search"] = "rbxassetid://10709789200",
+	["lucide-calendar-x"] = "rbxassetid://10709789407",
+	["lucide-calendar-x-2"] = "rbxassetid://10709789329",
+	["lucide-camera"] = "rbxassetid://10709789686",
+	["lucide-camera-off"] = "rbxassetid://10747822677",
+	["lucide-car"] = "rbxassetid://10709789810",
+	["lucide-carrot"] = "rbxassetid://10709789960",
+	["lucide-cast"] = "rbxassetid://10709790097",
+	["lucide-charge"] = "rbxassetid://10709790202",
+	["lucide-check"] = "rbxassetid://10709790644",
+	["lucide-check-circle"] = "rbxassetid://10709790387",
+	["lucide-check-circle-2"] = "rbxassetid://10709790298",
+	["lucide-check-square"] = "rbxassetid://10709790537",
+	["lucide-chef-hat"] = "rbxassetid://10709790757",
+	["lucide-cherry"] = "rbxassetid://10709790875",
+	["lucide-chevron-down"] = "rbxassetid://10709790948",
+	["lucide-chevron-first"] = "rbxassetid://10709791015",
+	["lucide-chevron-last"] = "rbxassetid://10709791130",
+	["lucide-chevron-left"] = "rbxassetid://10709791281",
+	["lucide-chevron-right"] = "rbxassetid://10709791437",
+	["lucide-chevron-up"] = "rbxassetid://10709791523",
+	["lucide-chevrons-down"] = "rbxassetid://10709796864",
+	["lucide-chevrons-down-up"] = "rbxassetid://10709791632",
+	["lucide-chevrons-left"] = "rbxassetid://10709797151",
+	["lucide-chevrons-left-right"] = "rbxassetid://10709797006",
+	["lucide-chevrons-right"] = "rbxassetid://10709797382",
+	["lucide-chevrons-right-left"] = "rbxassetid://10709797274",
+	["lucide-chevrons-up"] = "rbxassetid://10709797622",
+	["lucide-chevrons-up-down"] = "rbxassetid://10709797508",
+	["lucide-chrome"] = "rbxassetid://10709797725",
+	["lucide-circle"] = "rbxassetid://10709798174",
+	["lucide-circle-dot"] = "rbxassetid://10709797837",
+	["lucide-circle-ellipsis"] = "rbxassetid://10709797985",
+	["lucide-circle-slashed"] = "rbxassetid://10709798100",
+	["lucide-citrus"] = "rbxassetid://10709798276",
+	["lucide-clapperboard"] = "rbxassetid://10709798350",
+	["lucide-clipboard"] = "rbxassetid://10709799288",
+	["lucide-clipboard-check"] = "rbxassetid://10709798443",
+	["lucide-clipboard-copy"] = "rbxassetid://10709798574",
+	["lucide-clipboard-edit"] = "rbxassetid://10709798682",
+	["lucide-clipboard-list"] = "rbxassetid://10709798792",
+	["lucide-clipboard-signature"] = "rbxassetid://10709798890",
+	["lucide-clipboard-type"] = "rbxassetid://10709798999",
+	["lucide-clipboard-x"] = "rbxassetid://10709799124",
+	["lucide-clock"] = "rbxassetid://10709805144",
+	["lucide-clock-1"] = "rbxassetid://10709799535",
+	["lucide-clock-10"] = "rbxassetid://10709799718",
+	["lucide-clock-11"] = "rbxassetid://10709799818",
+	["lucide-clock-12"] = "rbxassetid://10709799962",
+	["lucide-clock-2"] = "rbxassetid://10709803876",
+	["lucide-clock-3"] = "rbxassetid://10709803989",
+	["lucide-clock-4"] = "rbxassetid://10709804164",
+	["lucide-clock-5"] = "rbxassetid://10709804291",
+	["lucide-clock-6"] = "rbxassetid://10709804435",
+	["lucide-clock-7"] = "rbxassetid://10709804599",
+	["lucide-clock-8"] = "rbxassetid://10709804784",
+	["lucide-clock-9"] = "rbxassetid://10709804996",
+	["lucide-cloud"] = "rbxassetid://10709806740",
+	["lucide-cloud-cog"] = "rbxassetid://10709805262",
+	["lucide-cloud-drizzle"] = "rbxassetid://10709805371",
+	["lucide-cloud-fog"] = "rbxassetid://10709805477",
+	["lucide-cloud-hail"] = "rbxassetid://10709805596",
+	["lucide-cloud-lightning"] = "rbxassetid://10709805727",
+	["lucide-cloud-moon"] = "rbxassetid://10709805942",
+	["lucide-cloud-moon-rain"] = "rbxassetid://10709805838",
+	["lucide-cloud-off"] = "rbxassetid://10709806060",
+	["lucide-cloud-rain"] = "rbxassetid://10709806277",
+	["lucide-cloud-rain-wind"] = "rbxassetid://10709806166",
+	["lucide-cloud-snow"] = "rbxassetid://10709806374",
+	["lucide-cloud-sun"] = "rbxassetid://10709806631",
+	["lucide-cloud-sun-rain"] = "rbxassetid://10709806475",
+	["lucide-cloudy"] = "rbxassetid://10709806859",
+	["lucide-clover"] = "rbxassetid://10709806995",
+	["lucide-code"] = "rbxassetid://10709810463",
+	["lucide-code-2"] = "rbxassetid://10709807111",
+	["lucide-codepen"] = "rbxassetid://10709810534",
+	["lucide-codesandbox"] = "rbxassetid://10709810676",
+	["lucide-coffee"] = "rbxassetid://10709810814",
+	["lucide-cog"] = "rbxassetid://10709810948",
+	["lucide-coins"] = "rbxassetid://10709811110",
+	["lucide-columns"] = "rbxassetid://10709811261",
+	["lucide-command"] = "rbxassetid://10709811365",
+	["lucide-compass"] = "rbxassetid://10709811445",
+	["lucide-component"] = "rbxassetid://10709811595",
+	["lucide-concierge-bell"] = "rbxassetid://10709811706",
+	["lucide-connection"] = "rbxassetid://10747361219",
+	["lucide-contact"] = "rbxassetid://10709811834",
+	["lucide-contrast"] = "rbxassetid://10709811939",
+	["lucide-cookie"] = "rbxassetid://10709812067",
+	["lucide-copy"] = "rbxassetid://10709812159",
+	["lucide-copyleft"] = "rbxassetid://10709812251",
+	["lucide-copyright"] = "rbxassetid://10709812311",
+	["lucide-corner-down-left"] = "rbxassetid://10709812396",
+	["lucide-corner-down-right"] = "rbxassetid://10709812485",
+	["lucide-corner-left-down"] = "rbxassetid://10709812632",
+	["lucide-corner-left-up"] = "rbxassetid://10709812784",
+	["lucide-corner-right-down"] = "rbxassetid://10709812939",
+	["lucide-corner-right-up"] = "rbxassetid://10709813094",
+	["lucide-corner-up-left"] = "rbxassetid://10709813185",
+	["lucide-corner-up-right"] = "rbxassetid://10709813281",
+	["lucide-cpu"] = "rbxassetid://10709813383",
+	["lucide-croissant"] = "rbxassetid://10709818125",
+	["lucide-crop"] = "rbxassetid://10709818245",
+	["lucide-cross"] = "rbxassetid://10709818399",
+	["lucide-crosshair"] = "rbxassetid://10709818534",
+	["lucide-crown"] = "rbxassetid://10709818626",
+	["lucide-cup-soda"] = "rbxassetid://10709818763",
+	["lucide-curly-braces"] = "rbxassetid://10709818847",
+	["lucide-currency"] = "rbxassetid://10709818931",
+	["lucide-database"] = "rbxassetid://10709818996",
+	["lucide-delete"] = "rbxassetid://10709819059",
+	["lucide-diamond"] = "rbxassetid://10709819149",
+	["lucide-dice-1"] = "rbxassetid://10709819266",
+	["lucide-dice-2"] = "rbxassetid://10709819361",
+	["lucide-dice-3"] = "rbxassetid://10709819508",
+	["lucide-dice-4"] = "rbxassetid://10709819670",
+	["lucide-dice-5"] = "rbxassetid://10709819801",
+	["lucide-dice-6"] = "rbxassetid://10709819896",
+	["lucide-dices"] = "rbxassetid://10723343321",
+	["lucide-diff"] = "rbxassetid://10723343416",
+	["lucide-disc"] = "rbxassetid://10723343537",
+	["lucide-divide"] = "rbxassetid://10723343805",
+	["lucide-divide-circle"] = "rbxassetid://10723343636",
+	["lucide-divide-square"] = "rbxassetid://10723343737",
+	["lucide-dollar-sign"] = "rbxassetid://10723343958",
+	["lucide-download"] = "rbxassetid://10723344270",
+	["lucide-download-cloud"] = "rbxassetid://10723344088",
+	["lucide-droplet"] = "rbxassetid://10723344432",
+	["lucide-droplets"] = "rbxassetid://10734883356",
+	["lucide-drumstick"] = "rbxassetid://10723344737",
+	["lucide-edit"] = "rbxassetid://10734883598",
+	["lucide-edit-2"] = "rbxassetid://10723344885",
+	["lucide-edit-3"] = "rbxassetid://10723345088",
+	["lucide-egg"] = "rbxassetid://10723345518",
+	["lucide-egg-fried"] = "rbxassetid://10723345347",
+	["lucide-electricity"] = "rbxassetid://10723345749",
+	["lucide-electricity-off"] = "rbxassetid://10723345643",
+	["lucide-equal"] = "rbxassetid://10723345990",
+	["lucide-equal-not"] = "rbxassetid://10723345866",
+	["lucide-eraser"] = "rbxassetid://10723346158",
+	["lucide-euro"] = "rbxassetid://10723346372",
+	["lucide-expand"] = "rbxassetid://10723346553",
+	["lucide-external-link"] = "rbxassetid://10723346684",
+	["lucide-eye"] = "rbxassetid://10723346959",
+	["lucide-eye-off"] = "rbxassetid://10723346871",
+	["lucide-factory"] = "rbxassetid://10723347051",
+	["lucide-fan"] = "rbxassetid://10723354359",
+	["lucide-fast-forward"] = "rbxassetid://10723354521",
+	["lucide-feather"] = "rbxassetid://10723354671",
+	["lucide-figma"] = "rbxassetid://10723354801",
+	["lucide-file"] = "rbxassetid://10723374641",
+	["lucide-file-archive"] = "rbxassetid://10723354921",
+	["lucide-file-audio"] = "rbxassetid://10723355148",
+	["lucide-file-audio-2"] = "rbxassetid://10723355026",
+	["lucide-file-axis-3d"] = "rbxassetid://10723355272",
+	["lucide-file-badge"] = "rbxassetid://10723355622",
+	["lucide-file-badge-2"] = "rbxassetid://10723355451",
+	["lucide-file-bar-chart"] = "rbxassetid://10723355887",
+	["lucide-file-bar-chart-2"] = "rbxassetid://10723355746",
+	["lucide-file-box"] = "rbxassetid://10723355989",
+	["lucide-file-check"] = "rbxassetid://10723356210",
+	["lucide-file-check-2"] = "rbxassetid://10723356100",
+	["lucide-file-clock"] = "rbxassetid://10723356329",
+	["lucide-file-code"] = "rbxassetid://10723356507",
+	["lucide-file-cog"] = "rbxassetid://10723356830",
+	["lucide-file-cog-2"] = "rbxassetid://10723356676",
+	["lucide-file-diff"] = "rbxassetid://10723357039",
+	["lucide-file-digit"] = "rbxassetid://10723357151",
+	["lucide-file-down"] = "rbxassetid://10723357322",
+	["lucide-file-edit"] = "rbxassetid://10723357495",
+	["lucide-file-heart"] = "rbxassetid://10723357637",
+	["lucide-file-image"] = "rbxassetid://10723357790",
+	["lucide-file-input"] = "rbxassetid://10723357933",
+	["lucide-file-json"] = "rbxassetid://10723364435",
+	["lucide-file-json-2"] = "rbxassetid://10723364361",
+	["lucide-file-key"] = "rbxassetid://10723364605",
+	["lucide-file-key-2"] = "rbxassetid://10723364515",
+	["lucide-file-line-chart"] = "rbxassetid://10723364725",
+	["lucide-file-lock"] = "rbxassetid://10723364957",
+	["lucide-file-lock-2"] = "rbxassetid://10723364861",
+	["lucide-file-minus"] = "rbxassetid://10723365254",
+	["lucide-file-minus-2"] = "rbxassetid://10723365086",
+	["lucide-file-output"] = "rbxassetid://10723365457",
+	["lucide-file-pie-chart"] = "rbxassetid://10723365598",
+	["lucide-file-plus"] = "rbxassetid://10723365877",
+	["lucide-file-plus-2"] = "rbxassetid://10723365766",
+	["lucide-file-question"] = "rbxassetid://10723365987",
+	["lucide-file-scan"] = "rbxassetid://10723366167",
+	["lucide-file-search"] = "rbxassetid://10723366550",
+	["lucide-file-search-2"] = "rbxassetid://10723366340",
+	["lucide-file-signature"] = "rbxassetid://10723366741",
+	["lucide-file-spreadsheet"] = "rbxassetid://10723366962",
+	["lucide-file-symlink"] = "rbxassetid://10723367098",
+	["lucide-file-terminal"] = "rbxassetid://10723367244",
+	["lucide-file-text"] = "rbxassetid://10723367380",
+	["lucide-file-type"] = "rbxassetid://10723367606",
+	["lucide-file-type-2"] = "rbxassetid://10723367509",
+	["lucide-file-up"] = "rbxassetid://10723367734",
+	["lucide-file-video"] = "rbxassetid://10723373884",
+	["lucide-file-video-2"] = "rbxassetid://10723367834",
+	["lucide-file-volume"] = "rbxassetid://10723374172",
+	["lucide-file-volume-2"] = "rbxassetid://10723374030",
+	["lucide-file-warning"] = "rbxassetid://10723374276",
+	["lucide-file-x"] = "rbxassetid://10723374544",
+	["lucide-file-x-2"] = "rbxassetid://10723374378",
+	["lucide-files"] = "rbxassetid://10723374759",
+	["lucide-film"] = "rbxassetid://10723374981",
+	["lucide-filter"] = "rbxassetid://10723375128",
+	["lucide-fingerprint"] = "rbxassetid://10723375250",
+	["lucide-flag"] = "rbxassetid://10723375890",
+	["lucide-flag-off"] = "rbxassetid://10723375443",
+	["lucide-flag-triangle-left"] = "rbxassetid://10723375608",
+	["lucide-flag-triangle-right"] = "rbxassetid://10723375727",
+	["lucide-flame"] = "rbxassetid://10723376114",
+	["lucide-flashlight"] = "rbxassetid://10723376471",
+	["lucide-flashlight-off"] = "rbxassetid://10723376365",
+	["lucide-flask-conical"] = "rbxassetid://10734883986",
+	["lucide-flask-round"] = "rbxassetid://10723376614",
+	["lucide-flip-horizontal"] = "rbxassetid://10723376884",
+	["lucide-flip-horizontal-2"] = "rbxassetid://10723376745",
+	["lucide-flip-vertical"] = "rbxassetid://10723377138",
+	["lucide-flip-vertical-2"] = "rbxassetid://10723377026",
+	["lucide-flower"] = "rbxassetid://10747830374",
+	["lucide-flower-2"] = "rbxassetid://10723377305",
+	["lucide-focus"] = "rbxassetid://10723377537",
+	["lucide-folder"] = "rbxassetid://10723387563",
+	["lucide-folder-archive"] = "rbxassetid://10723384478",
+	["lucide-folder-check"] = "rbxassetid://10723384605",
+	["lucide-folder-clock"] = "rbxassetid://10723384731",
+	["lucide-folder-closed"] = "rbxassetid://10723384893",
+	["lucide-folder-cog"] = "rbxassetid://10723385213",
+	["lucide-folder-cog-2"] = "rbxassetid://10723385036",
+	["lucide-folder-down"] = "rbxassetid://10723385338",
+	["lucide-folder-edit"] = "rbxassetid://10723385445",
+	["lucide-folder-heart"] = "rbxassetid://10723385545",
+	["lucide-folder-input"] = "rbxassetid://10723385721",
+	["lucide-folder-key"] = "rbxassetid://10723385848",
+	["lucide-folder-lock"] = "rbxassetid://10723386005",
+	["lucide-folder-minus"] = "rbxassetid://10723386127",
+	["lucide-folder-open"] = "rbxassetid://10723386277",
+	["lucide-folder-output"] = "rbxassetid://10723386386",
+	["lucide-folder-plus"] = "rbxassetid://10723386531",
+	["lucide-folder-search"] = "rbxassetid://10723386787",
+	["lucide-folder-search-2"] = "rbxassetid://10723386674",
+	["lucide-folder-symlink"] = "rbxassetid://10723386930",
+	["lucide-folder-tree"] = "rbxassetid://10723387085",
+	["lucide-folder-up"] = "rbxassetid://10723387265",
+	["lucide-folder-x"] = "rbxassetid://10723387448",
+	["lucide-folders"] = "rbxassetid://10723387721",
+	["lucide-form-input"] = "rbxassetid://10723387841",
+	["lucide-forward"] = "rbxassetid://10723388016",
+	["lucide-frame"] = "rbxassetid://10723394389",
+	["lucide-framer"] = "rbxassetid://10723394565",
+	["lucide-frown"] = "rbxassetid://10723394681",
+	["lucide-fuel"] = "rbxassetid://10723394846",
+	["lucide-function-square"] = "rbxassetid://10723395041",
+	["lucide-gamepad"] = "rbxassetid://10723395457",
+	["lucide-gamepad-2"] = "rbxassetid://10723395215",
+	["lucide-gauge"] = "rbxassetid://10723395708",
+	["lucide-gavel"] = "rbxassetid://10723395896",
+	["lucide-gem"] = "rbxassetid://10723396000",
+	["lucide-ghost"] = "rbxassetid://10723396107",
+	["lucide-gift"] = "rbxassetid://10723396402",
+	["lucide-gift-card"] = "rbxassetid://10723396225",
+	["lucide-git-branch"] = "rbxassetid://10723396676",
+	["lucide-git-branch-plus"] = "rbxassetid://10723396542",
+	["lucide-git-commit"] = "rbxassetid://10723396812",
+	["lucide-git-compare"] = "rbxassetid://10723396954",
+	["lucide-git-fork"] = "rbxassetid://10723397049",
+	["lucide-git-merge"] = "rbxassetid://10723397165",
+	["lucide-git-pull-request"] = "rbxassetid://10723397431",
+	["lucide-git-pull-request-closed"] = "rbxassetid://10723397268",
+	["lucide-git-pull-request-draft"] = "rbxassetid://10734884302",
+	["lucide-glass"] = "rbxassetid://10723397788",
+	["lucide-glass-2"] = "rbxassetid://10723397529",
+	["lucide-glass-water"] = "rbxassetid://10723397678",
+	["lucide-glasses"] = "rbxassetid://10723397895",
+	["lucide-globe"] = "rbxassetid://10723404337",
+	["lucide-globe-2"] = "rbxassetid://10723398002",
+	["lucide-grab"] = "rbxassetid://10723404472",
+	["lucide-graduation-cap"] = "rbxassetid://10723404691",
+	["lucide-grape"] = "rbxassetid://10723404822",
+	["lucide-grid"] = "rbxassetid://10723404936",
+	["lucide-grip-horizontal"] = "rbxassetid://10723405089",
+	["lucide-grip-vertical"] = "rbxassetid://10723405236",
+	["lucide-hammer"] = "rbxassetid://10723405360",
+	["lucide-hand"] = "rbxassetid://10723405649",
+	["lucide-hand-metal"] = "rbxassetid://10723405508",
+	["lucide-hard-drive"] = "rbxassetid://10723405749",
+	["lucide-hard-hat"] = "rbxassetid://10723405859",
+	["lucide-hash"] = "rbxassetid://10723405975",
+	["lucide-haze"] = "rbxassetid://10723406078",
+	["lucide-headphones"] = "rbxassetid://10723406165",
+	["lucide-heart"] = "rbxassetid://10723406885",
+	["lucide-heart-crack"] = "rbxassetid://10723406299",
+	["lucide-heart-handshake"] = "rbxassetid://10723406480",
+	["lucide-heart-off"] = "rbxassetid://10723406662",
+	["lucide-heart-pulse"] = "rbxassetid://10723406795",
+	["lucide-help-circle"] = "rbxassetid://10723406988",
+	["lucide-hexagon"] = "rbxassetid://10723407092",
+	["lucide-highlighter"] = "rbxassetid://10723407192",
+	["lucide-history"] = "rbxassetid://10723407335",
+	["lucide-home"] = "rbxassetid://10723407389",
+	["lucide-hourglass"] = "rbxassetid://10723407498",
+	["lucide-ice-cream"] = "rbxassetid://10723414308",
+	["lucide-image"] = "rbxassetid://10723415040",
+	["lucide-image-minus"] = "rbxassetid://10723414487",
+	["lucide-image-off"] = "rbxassetid://10723414677",
+	["lucide-image-plus"] = "rbxassetid://10723414827",
+	["lucide-import"] = "rbxassetid://10723415205",
+	["lucide-inbox"] = "rbxassetid://10723415335",
+	["lucide-indent"] = "rbxassetid://10723415494",
+	["lucide-indian-rupee"] = "rbxassetid://10723415642",
+	["lucide-infinity"] = "rbxassetid://10723415766",
+	["lucide-info"] = "rbxassetid://10723415903",
+	["lucide-inspect"] = "rbxassetid://10723416057",
+	["lucide-italic"] = "rbxassetid://10723416195",
+	["lucide-japanese-yen"] = "rbxassetid://10723416363",
+	["lucide-joystick"] = "rbxassetid://10723416527",
+	["lucide-key"] = "rbxassetid://10723416652",
+	["lucide-keyboard"] = "rbxassetid://10723416765",
+	["lucide-lamp"] = "rbxassetid://10723417513",
+	["lucide-lamp-ceiling"] = "rbxassetid://10723416922",
+	["lucide-lamp-desk"] = "rbxassetid://10723417016",
+	["lucide-lamp-floor"] = "rbxassetid://10723417131",
+	["lucide-lamp-wall-down"] = "rbxassetid://10723417240",
+	["lucide-lamp-wall-up"] = "rbxassetid://10723417356",
+	["lucide-landmark"] = "rbxassetid://10723417608",
+	["lucide-languages"] = "rbxassetid://10723417703",
+	["lucide-laptop"] = "rbxassetid://10723423881",
+	["lucide-laptop-2"] = "rbxassetid://10723417797",
+	["lucide-lasso"] = "rbxassetid://10723424235",
+	["lucide-lasso-select"] = "rbxassetid://10723424058",
+	["lucide-laugh"] = "rbxassetid://10723424372",
+	["lucide-layers"] = "rbxassetid://10723424505",
+	["lucide-layout"] = "rbxassetid://10723425376",
+	["lucide-layout-dashboard"] = "rbxassetid://10723424646",
+	["lucide-layout-grid"] = "rbxassetid://10723424838",
+	["lucide-layout-list"] = "rbxassetid://10723424963",
+	["lucide-layout-template"] = "rbxassetid://10723425187",
+	["lucide-leaf"] = "rbxassetid://10723425539",
+	["lucide-library"] = "rbxassetid://10723425615",
+	["lucide-life-buoy"] = "rbxassetid://10723425685",
+	["lucide-lightbulb"] = "rbxassetid://10723425852",
+	["lucide-lightbulb-off"] = "rbxassetid://10723425762",
+	["lucide-line-chart"] = "rbxassetid://10723426393",
+	["lucide-link"] = "rbxassetid://10723426722",
+	["lucide-link-2"] = "rbxassetid://10723426595",
+	["lucide-link-2-off"] = "rbxassetid://10723426513",
+	["lucide-list"] = "rbxassetid://10723433811",
+	["lucide-list-checks"] = "rbxassetid://10734884548",
+	["lucide-list-end"] = "rbxassetid://10723426886",
+	["lucide-list-minus"] = "rbxassetid://10723426986",
+	["lucide-list-music"] = "rbxassetid://10723427081",
+	["lucide-list-ordered"] = "rbxassetid://10723427199",
+	["lucide-list-plus"] = "rbxassetid://10723427334",
+	["lucide-list-start"] = "rbxassetid://10723427494",
+	["lucide-list-video"] = "rbxassetid://10723427619",
+	["lucide-list-x"] = "rbxassetid://10723433655",
+	["lucide-loader"] = "rbxassetid://10723434070",
+	["lucide-loader-2"] = "rbxassetid://10723433935",
+	["lucide-locate"] = "rbxassetid://10723434557",
+	["lucide-locate-fixed"] = "rbxassetid://10723434236",
+	["lucide-locate-off"] = "rbxassetid://10723434379",
+	["lucide-lock"] = "rbxassetid://10723434711",
+	["lucide-log-in"] = "rbxassetid://10723434830",
+	["lucide-log-out"] = "rbxassetid://10723434906",
+	["lucide-luggage"] = "rbxassetid://10723434993",
+	["lucide-magnet"] = "rbxassetid://10723435069",
+	["lucide-mail"] = "rbxassetid://10734885430",
+	["lucide-mail-check"] = "rbxassetid://10723435182",
+	["lucide-mail-minus"] = "rbxassetid://10723435261",
+	["lucide-mail-open"] = "rbxassetid://10723435342",
+	["lucide-mail-plus"] = "rbxassetid://10723435443",
+	["lucide-mail-question"] = "rbxassetid://10723435515",
+	["lucide-mail-search"] = "rbxassetid://10734884739",
+	["lucide-mail-warning"] = "rbxassetid://10734885015",
+	["lucide-mail-x"] = "rbxassetid://10734885247",
+	["lucide-mails"] = "rbxassetid://10734885614",
+	["lucide-map"] = "rbxassetid://10734886202",
+	["lucide-map-pin"] = "rbxassetid://10734886004",
+	["lucide-map-pin-off"] = "rbxassetid://10734885803",
+	["lucide-maximize"] = "rbxassetid://10734886735",
+	["lucide-maximize-2"] = "rbxassetid://10734886496",
+	["lucide-medal"] = "rbxassetid://10734887072",
+	["lucide-megaphone"] = "rbxassetid://10734887454",
+	["lucide-megaphone-off"] = "rbxassetid://10734887311",
+	["lucide-meh"] = "rbxassetid://10734887603",
+	["lucide-menu"] = "rbxassetid://10734887784",
+	["lucide-message-circle"] = "rbxassetid://10734888000",
+	["lucide-message-square"] = "rbxassetid://10734888228",
+	["lucide-mic"] = "rbxassetid://10734888864",
+	["lucide-mic-2"] = "rbxassetid://10734888430",
+	["lucide-mic-off"] = "rbxassetid://10734888646",
+	["lucide-microscope"] = "rbxassetid://10734889106",
+	["lucide-microwave"] = "rbxassetid://10734895076",
+	["lucide-milestone"] = "rbxassetid://10734895310",
+	["lucide-minimize"] = "rbxassetid://10734895698",
+	["lucide-minimize-2"] = "rbxassetid://10734895530",
+	["lucide-minus"] = "rbxassetid://10734896206",
+	["lucide-minus-circle"] = "rbxassetid://10734895856",
+	["lucide-minus-square"] = "rbxassetid://10734896029",
+	["lucide-monitor"] = "rbxassetid://10734896881",
+	["lucide-monitor-off"] = "rbxassetid://10734896360",
+	["lucide-monitor-speaker"] = "rbxassetid://10734896512",
+	["lucide-moon"] = "rbxassetid://10734897102",
+	["lucide-more-horizontal"] = "rbxassetid://10734897250",
+	["lucide-more-vertical"] = "rbxassetid://10734897387",
+	["lucide-mountain"] = "rbxassetid://10734897956",
+	["lucide-mountain-snow"] = "rbxassetid://10734897665",
+	["lucide-mouse"] = "rbxassetid://10734898592",
+	["lucide-mouse-pointer"] = "rbxassetid://10734898476",
+	["lucide-mouse-pointer-2"] = "rbxassetid://10734898194",
+	["lucide-mouse-pointer-click"] = "rbxassetid://10734898355",
+	["lucide-move"] = "rbxassetid://10734900011",
+	["lucide-move-3d"] = "rbxassetid://10734898756",
+	["lucide-move-diagonal"] = "rbxassetid://10734899164",
+	["lucide-move-diagonal-2"] = "rbxassetid://10734898934",
+	["lucide-move-horizontal"] = "rbxassetid://10734899414",
+	["lucide-move-vertical"] = "rbxassetid://10734899821",
+	["lucide-music"] = "rbxassetid://10734905958",
+	["lucide-music-2"] = "rbxassetid://10734900215",
+	["lucide-music-3"] = "rbxassetid://10734905665",
+	["lucide-music-4"] = "rbxassetid://10734905823",
+	["lucide-navigation"] = "rbxassetid://10734906744",
+	["lucide-navigation-2"] = "rbxassetid://10734906332",
+	["lucide-navigation-2-off"] = "rbxassetid://10734906144",
+	["lucide-navigation-off"] = "rbxassetid://10734906580",
+	["lucide-network"] = "rbxassetid://10734906975",
+	["lucide-newspaper"] = "rbxassetid://10734907168",
+	["lucide-octagon"] = "rbxassetid://10734907361",
+	["lucide-option"] = "rbxassetid://10734907649",
+	["lucide-outdent"] = "rbxassetid://10734907933",
+	["lucide-package"] = "rbxassetid://10734909540",
+	["lucide-package-2"] = "rbxassetid://10734908151",
+	["lucide-package-check"] = "rbxassetid://10734908384",
+	["lucide-package-minus"] = "rbxassetid://10734908626",
+	["lucide-package-open"] = "rbxassetid://10734908793",
+	["lucide-package-plus"] = "rbxassetid://10734909016",
+	["lucide-package-search"] = "rbxassetid://10734909196",
+	["lucide-package-x"] = "rbxassetid://10734909375",
+	["lucide-paint-bucket"] = "rbxassetid://10734909847",
+	["lucide-paintbrush"] = "rbxassetid://10734910187",
+	["lucide-paintbrush-2"] = "rbxassetid://10734910030",
+	["lucide-palette"] = "rbxassetid://10734910430",
+	["lucide-palmtree"] = "rbxassetid://10734910680",
+	["lucide-paperclip"] = "rbxassetid://10734910927",
+	["lucide-party-popper"] = "rbxassetid://10734918735",
+	["lucide-pause"] = "rbxassetid://10734919336",
+	["lucide-pause-circle"] = "rbxassetid://10735024209",
+	["lucide-pause-octagon"] = "rbxassetid://10734919143",
+	["lucide-pen-tool"] = "rbxassetid://10734919503",
+	["lucide-pencil"] = "rbxassetid://10734919691",
+	["lucide-percent"] = "rbxassetid://10734919919",
+	["lucide-person-standing"] = "rbxassetid://10734920149",
+	["lucide-phone"] = "rbxassetid://10734921524",
+	["lucide-phone-call"] = "rbxassetid://10734920305",
+	["lucide-phone-forwarded"] = "rbxassetid://10734920508",
+	["lucide-phone-incoming"] = "rbxassetid://10734920694",
+	["lucide-phone-missed"] = "rbxassetid://10734920845",
+	["lucide-phone-off"] = "rbxassetid://10734921077",
+	["lucide-phone-outgoing"] = "rbxassetid://10734921288",
+	["lucide-pie-chart"] = "rbxassetid://10734921727",
+	["lucide-piggy-bank"] = "rbxassetid://10734921935",
+	["lucide-pin"] = "rbxassetid://10734922324",
+	["lucide-pin-off"] = "rbxassetid://10734922180",
+	["lucide-pipette"] = "rbxassetid://10734922497",
+	["lucide-pizza"] = "rbxassetid://10734922774",
+	["lucide-plane"] = "rbxassetid://10734922971",
+	["lucide-play"] = "rbxassetid://10734923549",
+	["lucide-play-circle"] = "rbxassetid://10734923214",
+	["lucide-plus"] = "rbxassetid://10734924532",
+	["lucide-plus-circle"] = "rbxassetid://10734923868",
+	["lucide-plus-square"] = "rbxassetid://10734924219",
+	["lucide-podcast"] = "rbxassetid://10734929553",
+	["lucide-pointer"] = "rbxassetid://10734929723",
+	["lucide-pound-sterling"] = "rbxassetid://10734929981",
+	["lucide-power"] = "rbxassetid://10734930466",
+	["lucide-power-off"] = "rbxassetid://10734930257",
+	["lucide-printer"] = "rbxassetid://10734930632",
+	["lucide-puzzle"] = "rbxassetid://10734930886",
+	["lucide-quote"] = "rbxassetid://10734931234",
+	["lucide-radio"] = "rbxassetid://10734931596",
+	["lucide-radio-receiver"] = "rbxassetid://10734931402",
+	["lucide-rectangle-horizontal"] = "rbxassetid://10734931777",
+	["lucide-rectangle-vertical"] = "rbxassetid://10734932081",
+	["lucide-recycle"] = "rbxassetid://10734932295",
+	["lucide-redo"] = "rbxassetid://10734932822",
+	["lucide-redo-2"] = "rbxassetid://10734932586",
+	["lucide-refresh-ccw"] = "rbxassetid://10734933056",
+	["lucide-refresh-cw"] = "rbxassetid://10734933222",
+	["lucide-refrigerator"] = "rbxassetid://10734933465",
+	["lucide-regex"] = "rbxassetid://10734933655",
+	["lucide-repeat"] = "rbxassetid://10734933966",
+	["lucide-repeat-1"] = "rbxassetid://10734933826",
+	["lucide-reply"] = "rbxassetid://10734934252",
+	["lucide-reply-all"] = "rbxassetid://10734934132",
+	["lucide-rewind"] = "rbxassetid://10734934347",
+	["lucide-rocket"] = "rbxassetid://10734934585",
+	["lucide-rocking-chair"] = "rbxassetid://10734939942",
+	["lucide-rotate-3d"] = "rbxassetid://10734940107",
+	["lucide-rotate-ccw"] = "rbxassetid://10734940376",
+	["lucide-rotate-cw"] = "rbxassetid://10734940654",
+	["lucide-rss"] = "rbxassetid://10734940825",
+	["lucide-ruler"] = "rbxassetid://10734941018",
+	["lucide-russian-ruble"] = "rbxassetid://10734941199",
+	["lucide-sailboat"] = "rbxassetid://10734941354",
+	["lucide-save"] = "rbxassetid://10734941499",
+	["lucide-scale"] = "rbxassetid://10734941912",
+	["lucide-scale-3d"] = "rbxassetid://10734941739",
+	["lucide-scaling"] = "rbxassetid://10734942072",
+	["lucide-scan"] = "rbxassetid://10734942565",
+	["lucide-scan-face"] = "rbxassetid://10734942198",
+	["lucide-scan-line"] = "rbxassetid://10734942351",
+	["lucide-scissors"] = "rbxassetid://10734942778",
+	["lucide-screen-share"] = "rbxassetid://10734943193",
+	["lucide-screen-share-off"] = "rbxassetid://10734942967",
+	["lucide-scroll"] = "rbxassetid://10734943448",
+	["lucide-search"] = "rbxassetid://10734943674",
+	["lucide-send"] = "rbxassetid://10734943902",
+	["lucide-separator-horizontal"] = "rbxassetid://10734944115",
+	["lucide-separator-vertical"] = "rbxassetid://10734944326",
+	["lucide-server"] = "rbxassetid://10734949856",
+	["lucide-server-cog"] = "rbxassetid://10734944444",
+	["lucide-server-crash"] = "rbxassetid://10734944554",
+	["lucide-server-off"] = "rbxassetid://10734944668",
+	["lucide-settings"] = "rbxassetid://10734950309",
+	["lucide-settings-2"] = "rbxassetid://10734950020",
+	["lucide-share"] = "rbxassetid://10734950813",
+	["lucide-share-2"] = "rbxassetid://10734950553",
+	["lucide-sheet"] = "rbxassetid://10734951038",
+	["lucide-shield"] = "rbxassetid://10734951847",
+	["lucide-shield-alert"] = "rbxassetid://10734951173",
+	["lucide-shield-check"] = "rbxassetid://10734951367",
+	["lucide-shield-close"] = "rbxassetid://10734951535",
+	["lucide-shield-off"] = "rbxassetid://10734951684",
+	["lucide-shirt"] = "rbxassetid://10734952036",
+	["lucide-shopping-bag"] = "rbxassetid://10734952273",
+	["lucide-shopping-cart"] = "rbxassetid://10734952479",
+	["lucide-shovel"] = "rbxassetid://10734952773",
+	["lucide-shower-head"] = "rbxassetid://10734952942",
+	["lucide-shrink"] = "rbxassetid://10734953073",
+	["lucide-shrub"] = "rbxassetid://10734953241",
+	["lucide-shuffle"] = "rbxassetid://10734953451",
+	["lucide-sidebar"] = "rbxassetid://10734954301",
+	["lucide-sidebar-close"] = "rbxassetid://10734953715",
+	["lucide-sidebar-open"] = "rbxassetid://10734954000",
+	["lucide-sigma"] = "rbxassetid://10734954538",
+	["lucide-signal"] = "rbxassetid://10734961133",
+	["lucide-signal-high"] = "rbxassetid://10734954807",
+	["lucide-signal-low"] = "rbxassetid://10734955080",
+	["lucide-signal-medium"] = "rbxassetid://10734955336",
+	["lucide-signal-zero"] = "rbxassetid://10734960878",
+	["lucide-siren"] = "rbxassetid://10734961284",
+	["lucide-skip-back"] = "rbxassetid://10734961526",
+	["lucide-skip-forward"] = "rbxassetid://10734961809",
+	["lucide-skull"] = "rbxassetid://10734962068",
+	["lucide-slack"] = "rbxassetid://10734962339",
+	["lucide-slash"] = "rbxassetid://10734962600",
+	["lucide-slice"] = "rbxassetid://10734963024",
+	["lucide-sliders"] = "rbxassetid://10734963400",
+	["lucide-sliders-horizontal"] = "rbxassetid://10734963191",
+	["lucide-smartphone"] = "rbxassetid://10734963940",
+	["lucide-smartphone-charging"] = "rbxassetid://10734963671",
+	["lucide-smile"] = "rbxassetid://10734964441",
+	["lucide-smile-plus"] = "rbxassetid://10734964188",
+	["lucide-snowflake"] = "rbxassetid://10734964600",
+	["lucide-sofa"] = "rbxassetid://10734964852",
+	["lucide-sort-asc"] = "rbxassetid://10734965115",
+	["lucide-sort-desc"] = "rbxassetid://10734965287",
+	["lucide-speaker"] = "rbxassetid://10734965419",
+	["lucide-sprout"] = "rbxassetid://10734965572",
+	["lucide-square"] = "rbxassetid://10734965702",
+	["lucide-star"] = "rbxassetid://10734966248",
+	["lucide-star-half"] = "rbxassetid://10734965897",
+	["lucide-star-off"] = "rbxassetid://10734966097",
+	["lucide-stethoscope"] = "rbxassetid://10734966384",
+	["lucide-sticker"] = "rbxassetid://10734972234",
+	["lucide-sticky-note"] = "rbxassetid://10734972463",
+	["lucide-stop-circle"] = "rbxassetid://10734972621",
+	["lucide-stretch-horizontal"] = "rbxassetid://10734972862",
+	["lucide-stretch-vertical"] = "rbxassetid://10734973130",
+	["lucide-strikethrough"] = "rbxassetid://10734973290",
+	["lucide-subscript"] = "rbxassetid://10734973457",
+	["lucide-sun"] = "rbxassetid://10734974297",
+	["lucide-sun-dim"] = "rbxassetid://10734973645",
+	["lucide-sun-medium"] = "rbxassetid://10734973778",
+	["lucide-sun-moon"] = "rbxassetid://10734973999",
+	["lucide-sun-snow"] = "rbxassetid://10734974130",
+	["lucide-sunrise"] = "rbxassetid://10734974522",
+	["lucide-sunset"] = "rbxassetid://10734974689",
+	["lucide-superscript"] = "rbxassetid://10734974850",
+	["lucide-swiss-franc"] = "rbxassetid://10734975024",
+	["lucide-switch-camera"] = "rbxassetid://10734975214",
+	["lucide-sword"] = "rbxassetid://10734975486",
+	["lucide-swords"] = "rbxassetid://10734975692",
+	["lucide-syringe"] = "rbxassetid://10734975932",
+	["lucide-table"] = "rbxassetid://10734976230",
+	["lucide-table-2"] = "rbxassetid://10734976097",
+	["lucide-tablet"] = "rbxassetid://10734976394",
+	["lucide-tag"] = "rbxassetid://10734976528",
+	["lucide-tags"] = "rbxassetid://10734976739",
+	["lucide-target"] = "rbxassetid://10734977012",
+	["lucide-tent"] = "rbxassetid://10734981750",
+	["lucide-terminal"] = "rbxassetid://10734982144",
+	["lucide-terminal-square"] = "rbxassetid://10734981995",
+	["lucide-text-cursor"] = "rbxassetid://10734982395",
+	["lucide-text-cursor-input"] = "rbxassetid://10734982297",
+	["lucide-thermometer"] = "rbxassetid://10734983134",
+	["lucide-thermometer-snowflake"] = "rbxassetid://10734982571",
+	["lucide-thermometer-sun"] = "rbxassetid://10734982771",
+	["lucide-thumbs-down"] = "rbxassetid://10734983359",
+	["lucide-thumbs-up"] = "rbxassetid://10734983629",
+	["lucide-ticket"] = "rbxassetid://10734983868",
+	["lucide-timer"] = "rbxassetid://10734984606",
+	["lucide-timer-off"] = "rbxassetid://10734984138",
+	["lucide-timer-reset"] = "rbxassetid://10734984355",
+	["lucide-toggle-left"] = "rbxassetid://10734984834",
+	["lucide-toggle-right"] = "rbxassetid://10734985040",
+	["lucide-tornado"] = "rbxassetid://10734985247",
+	["lucide-toy-brick"] = "rbxassetid://10747361919",
+	["lucide-train"] = "rbxassetid://10747362105",
+	["lucide-trash"] = "rbxassetid://10747362393",
+	["lucide-trash-2"] = "rbxassetid://10747362241",
+	["lucide-tree-deciduous"] = "rbxassetid://10747362534",
+	["lucide-tree-pine"] = "rbxassetid://10747362748",
+	["lucide-trees"] = "rbxassetid://10747363016",
+	["lucide-trending-down"] = "rbxassetid://10747363205",
+	["lucide-trending-up"] = "rbxassetid://10747363465",
+	["lucide-triangle"] = "rbxassetid://10747363621",
+	["lucide-trophy"] = "rbxassetid://10747363809",
+	["lucide-truck"] = "rbxassetid://10747364031",
+	["lucide-tv"] = "rbxassetid://10747364593",
+	["lucide-tv-2"] = "rbxassetid://10747364302",
+	["lucide-type"] = "rbxassetid://10747364761",
+	["lucide-umbrella"] = "rbxassetid://10747364971",
+	["lucide-underline"] = "rbxassetid://10747365191",
+	["lucide-undo"] = "rbxassetid://10747365484",
+	["lucide-undo-2"] = "rbxassetid://10747365359",
+	["lucide-unlink"] = "rbxassetid://10747365771",
+	["lucide-unlink-2"] = "rbxassetid://10747397871",
+	["lucide-unlock"] = "rbxassetid://10747366027",
+	["lucide-upload"] = "rbxassetid://10747366434",
+	["lucide-upload-cloud"] = "rbxassetid://10747366266",
+	["lucide-usb"] = "rbxassetid://10747366606",
+	["lucide-user"] = "rbxassetid://10747373176",
+	["lucide-user-check"] = "rbxassetid://10747371901",
+	["lucide-user-cog"] = "rbxassetid://10747372167",
+	["lucide-user-minus"] = "rbxassetid://10747372346",
+	["lucide-user-plus"] = "rbxassetid://10747372702",
+	["lucide-user-x"] = "rbxassetid://10747372992",
+	["lucide-users"] = "rbxassetid://10747373426",
+	["lucide-utensils"] = "rbxassetid://10747373821",
+	["lucide-utensils-crossed"] = "rbxassetid://10747373629",
+	["lucide-venetian-mask"] = "rbxassetid://10747374003",
+	["lucide-verified"] = "rbxassetid://10747374131",
+	["lucide-vibrate"] = "rbxassetid://10747374489",
+	["lucide-vibrate-off"] = "rbxassetid://10747374269",
+	["lucide-video"] = "rbxassetid://10747374938",
+	["lucide-video-off"] = "rbxassetid://10747374721",
+	["lucide-view"] = "rbxassetid://10747375132",
+	["lucide-voicemail"] = "rbxassetid://10747375281",
+	["lucide-volume"] = "rbxassetid://10747376008",
+	["lucide-volume-1"] = "rbxassetid://10747375450",
+	["lucide-volume-2"] = "rbxassetid://10747375679",
+	["lucide-volume-x"] = "rbxassetid://10747375880",
+	["lucide-wallet"] = "rbxassetid://10747376205",
+	["lucide-wand"] = "rbxassetid://10747376565",
+	["lucide-wand-2"] = "rbxassetid://10747376349",
+	["lucide-watch"] = "rbxassetid://10747376722",
+	["lucide-waves"] = "rbxassetid://10747376931",
+	["lucide-webcam"] = "rbxassetid://10747381992",
+	["lucide-wifi"] = "rbxassetid://10747382504",
+	["lucide-wifi-off"] = "rbxassetid://10747382268",
+	["lucide-wind"] = "rbxassetid://10747382750",
+	["lucide-wrap-text"] = "rbxassetid://10747383065",
+	["lucide-wrench"] = "rbxassetid://10747383470",
+	["lucide-x"] = "rbxassetid://10747384394",
+	["lucide-x-circle"] = "rbxassetid://10747383819",
+	["lucide-x-octagon"] = "rbxassetid://10747384037",
+	["lucide-x-square"] = "rbxassetid://10747384217",
+	["lucide-zoom-in"] = "rbxassetid://10747384552",
+	["lucide-zoom-out"] = "rbxassetid://10747384679",
+};
+
+Sunset.WindowFlags = {};
+
+function Sunset:IsMobile() : boolean
+	return UserInputService.TouchEnabled;	
+end;
+
+function Sunset:RandomString() : string
+	return string.char(math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102),math.random(64,102));	
+end;
+
+function Sunset:GetTextSize(Text : TextLabel,CustomFont: Enum.Font) : Vector2
+	return TextService:GetTextSize(Text.Text,Text.TextSize,(Text.Font ~= Enum.Font.Unknown and Text.Font) or (CustomFont or Enum.Font.GothamMedium),Vector2.new(math.huge,math.huge));
+end;
+
+function Sunset:IsMouseOverFrame(Frame : Frame) : boolean
+	local AbsPos: Vector2, AbsSize: Vector2 = Frame.AbsolutePosition, Frame.AbsoluteSize;
+
+	if Mouse.X >= AbsPos.X and Mouse.X <= AbsPos.X + AbsSize.X and Mouse.Y >= AbsPos.Y and Mouse.Y <= AbsPos.Y + AbsSize.Y then
+		return true;
+	end;
+end;
+
+function Sunset:GetCalculatePosition(planePos: number, planeNormal: Vector3, rayOrigin: number, rayDirection: Vector3) : number
+	local n: Vector3 = planeNormal;
+	local d: Vector3 = rayDirection;
+	local v: Vector3 = rayOrigin - planePos;
+
+	local num: number = (n.x * v.x) + (n.y * v.y) + (n.z * v.z);
+	local den: number = (n.x * d.x) + (n.y * d.y) + (n.z * d.z);
+	local a: number = -num / den;
+
+	return rayOrigin + (a * rayDirection);
+end;
+
+function Sunset:CreateHover(Element : Frame,Callback : (boolean) -> any)
+	Element.MouseEnter:Connect(function()
+		Callback(true);
+	end);
+
+	Element.MouseLeave:Connect(function()
+		Callback(false);
+	end);
+end;
+
+function Sunset:GetIcon(name : string) : string
+	return Sunset.Lucide['lucide-'..tostring(name)] or Sunset.Lucide[name] or Sunset.Lucide[tostring(name)] or "";
+end;
+
+function Sunset:SetIcon(name : string, value : string)
+	Sunset.Lucide[name] = value;
+end;
+
+function Sunset:Rounding(num: number, numDecimalPlaces: number) : number
+	local mult: number = 10 ^ (numDecimalPlaces or 0);
+	return math.floor(num * mult + 0.5) / mult;
+end;
+
+function Sunset:CreateAnimation(Instance: Instance , Time: number , Style : Enum.EasingStyle , Property : {[string] : any}) : Tween
+	if not Property then
+		if typeof(Style) == 'table' then
+			Property = Style;
+			Style = nil;
+		end;
+	end;
+
+	local Tween: Tween = TweenService:Create(Instance,TweenInfo.new(Time or 1 , Style or Enum.EasingStyle.Quint),Property);
+
+	Tween:Play();
+
+	return Tween;
+end;
+
+function Sunset:NewInput(Frame : Frame , Callback : () -> ()) : TextButton
+	local Button = Instance.new('TextButton',Frame);
+
+	Button.ZIndex = Frame.ZIndex + 10;
+	Button.Size = UDim2.fromScale(1,1);
+	Button.BackgroundTransparency = 1;
+	Button.TextTransparency = 1;
+
+	if Callback then
+		Button.MouseButton1Click:Connect(Callback);
+	end;
+
+	return Button;
+end;
+
+function Sunset:Drag(InputFrame: Frame, MoveFrame: Frame, Speed : number)
+	local dragToggle: boolean = false;
+	local dragStart: Vector3 = nil;
+	local startPos: UDim2 = nil;
+
+	local function updateInput(input)
+		local delta = input.Position - dragStart;
+		local position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y);
+
+		Sunset:CreateAnimation(MoveFrame,Speed,nil,{
+			Position = position
+		});
+	end;
+
+	InputFrame.InputBegan:Connect(function(input)
+		if (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) and #Sunset.DragBlacklist <= 0 then 
+			dragToggle = true
+			dragStart = input.Position
+			startPos = MoveFrame.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragToggle = false
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch and #Sunset.DragBlacklist <= 0 then
+			if dragToggle then
+				updateInput(input)
+			end
+		else
+			if #Sunset.DragBlacklist > 0 then
+				dragToggle = false
+			end
+		end
+	end);
+end;
+
+function Sunset:ScrollSignal(Scroll: ScrollingFrame,UIListLayout: UIListLayout,Type:string)
+	if Type == 'X' then
+		UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+			Scroll.CanvasSize = UDim2.fromOffset(UIListLayout.AbsoluteContentSize.X,0)
+		end)
+	else
+		UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+			Scroll.CanvasSize = UDim2.fromOffset(0,UIListLayout.AbsoluteContentSize.Y)
+		end)
+	end;
+end;
+
+function Sunset:CreateResponse(args: {[string] : (any) -> any})
+	local main = {};
+
+	for i,v in next , args do
+		if typeof(v) == 'function' then
+			main[i] = function(self , ...)
+				return v(...);
+			end;
+		else
+			main[i] = v;
+		end;
+	end;
+
+	return main;
+end;
+
+function Sunset:GetWindowFromElement(Element: GuiObject)
+	for i,v in next , Sunset.Windows do
+		if Element:IsDescendantOf(v) then
+			return v;
+		end;
+	end;
+end;
+
+function Sunset:CreateOption(OptionButton: ImageButton): Elements
+	Sunset:CreateHover(OptionButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(OptionButton,0.5,{
+				ImageTransparency = 0.3
+			})
+		else
+			Sunset:CreateAnimation(OptionButton,0.5,{
+				ImageTransparency = 0.600
+			})
+		end;
+	end);
+
+	local Bindable = Instance.new('BindableEvent');
+	local OwnWindow = Sunset:GetWindowFromElement(OptionButton);
+	local ExtElementFrame = Instance.new("Frame")
+	local UICorner = Instance.new("UICorner")
+	local UIStroke = Instance.new("UIStroke")
+	local DropShadow = Instance.new("ImageLabel")
+	local ScrollingFrame = Instance.new("ScrollingFrame")
+	local UIListLayout = Instance.new("UIListLayout")
+	local SpaceBox = Instance.new("Frame")
+
+	Sunset:ScrollSignal(ScrollingFrame,UIListLayout,'Y');
+
+	ExtElementFrame.Active = true;
+	ExtElementFrame.Name = Sunset:RandomString()
+	ExtElementFrame.Parent = OwnWindow
+	ExtElementFrame.AnchorPoint = Vector2.new(0.5, 0)
+	ExtElementFrame.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+	ExtElementFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ExtElementFrame.BorderSizePixel = 0
+	ExtElementFrame.ClipsDescendants = true
+	ExtElementFrame.Position = UDim2.new(2, 0, 2, 0)
+	ExtElementFrame.Size = UDim2.new(0, 200, 0, 0)
+	ExtElementFrame.ZIndex = 100
+
+	UICorner.CornerRadius = UDim.new(0, 2)
+	UICorner.Parent = ExtElementFrame
+
+	UIStroke.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke.Parent = ExtElementFrame
+
+	DropShadow.Name = Sunset:RandomString()
+	DropShadow.Parent = ExtElementFrame
+	DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	DropShadow.BackgroundTransparency = 1.000
+	DropShadow.BorderSizePixel = 0
+	DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+	DropShadow.Rotation = 0.001
+	DropShadow.Size = UDim2.new(1, 47, 1, 47)
+	DropShadow.ZIndex = 99
+	DropShadow.Image = "rbxassetid://6014261993"
+	DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+	DropShadow.ImageTransparency = 0.750
+	DropShadow.ScaleType = Enum.ScaleType.Slice
+	DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+
+	ScrollingFrame.Parent = ExtElementFrame
+	ScrollingFrame.Active = true
+	ScrollingFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	ScrollingFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	ScrollingFrame.BackgroundTransparency = 1.000
+	ScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ScrollingFrame.BorderSizePixel = 0
+	ScrollingFrame.ClipsDescendants = false
+	ScrollingFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	ScrollingFrame.Size = UDim2.new(1, 0, 1, -5)
+	ScrollingFrame.ZIndex = 109
+	ScrollingFrame.ScrollBarThickness = 0
+
+	UIListLayout.Parent = ScrollingFrame
+	UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	UIListLayout.Padding = UDim.new(0, 5)
+
+	SpaceBox.Name = Sunset:RandomString()
+	SpaceBox.Parent = ScrollingFrame
+	SpaceBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	SpaceBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	SpaceBox.BorderSizePixel = 0
+	SpaceBox.Size = UDim2.new(0, 0, 0, 3)
+
+	local SPAWN_THREAD;
+
+	local ToggleExt = function(bool)
+		if bool then
+			Bindable:SetAttribute('V',true);
+			Bindable:Fire(true);
+
+			local size = math.clamp(UIListLayout.AbsoluteContentSize.Y + 15,0,200)
+
+			ExtElementFrame.Position = UDim2.fromOffset(OptionButton.AbsolutePosition.X + 100, OptionButton.AbsolutePosition.Y + (size / 2))
+
+			Sunset:CreateAnimation(ExtElementFrame,0.45,{
+				Size = UDim2.new(0, 200, 0, size)
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.45,{
+				ImageTransparency = 0.750
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.45,{
+				Transparency = 0
+			})
+
+			if SPAWN_THREAD then
+				task.cancel(SPAWN_THREAD);
+				SPAWN_THREAD = nil;
+			end;
+
+			SPAWN_THREAD = task.spawn(function()
+				while true do task.wait(0.1)
+					local size = math.clamp(UIListLayout.AbsoluteContentSize.Y + 15,0,200)
+					local ud = UDim2.fromOffset(OptionButton.AbsolutePosition.X + 100, OptionButton.AbsolutePosition.Y + (size / 2));
+
+					Sunset:CreateAnimation(ExtElementFrame,0.35,{
+						Position = ud
+					});
+				end;
+			end)
+		else
+			if SPAWN_THREAD then
+				task.cancel(SPAWN_THREAD);
+				SPAWN_THREAD = nil;
+			end;
+
+			Bindable:SetAttribute('V',false);
+			Bindable:Fire(false);
+
+			Sunset:CreateAnimation(ExtElementFrame,0.45,{
+				Size = UDim2.new(0, 200, 0, 0)
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.45,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.45,{
+				Transparency = 1
+			})
+		end;
+	end;
+
+	Bindable:SetAttribute('V',false);
+
+	ToggleExt(false);
+
+	OptionButton.MouseButton1Click:Connect(function()
+		ToggleExt(true);
+	end);
+
+	UserInputService.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if not Sunset:IsMouseOverFrame(ExtElementFrame) and not Sunset.GLOBAL_ENVIRONMENT.IS_HOLD_COLOR_PICKER then
+				ToggleExt(false);
+			end;
+		end;
+	end);
+
+	local UIElements: Elements = Sunset:CreateElements(ScrollingFrame,ScrollingFrame.ZIndex,Bindable);
+
+	return UIElements;
+end;
+
+function Sunset:CreateColorPicker(ColorBox: Frame,Transparency, Callback)
+	Transparency = Transparency or 0;
+	Callback = Callback or function() end;
+
+	local OwnWindow = Sunset:GetWindowFromElement(ColorBox);
+	local ColorPickerFrame = Instance.new("Frame")
+	local UICorner = Instance.new("UICorner")
+	local UIStroke = Instance.new("UIStroke")
+	local DropShadow = Instance.new("ImageLabel")
+	local ColorPickBox = Instance.new("ImageLabel")
+	local MouseMovement = Instance.new("ImageLabel")
+	local UICorner_2 = Instance.new("UICorner")
+	local UIStroke_2 = Instance.new("UIStroke")
+	local ColorRedGreenBlue = Instance.new("Frame")
+	local UIGradient = Instance.new("UIGradient")
+	local UICorner_3 = Instance.new("UICorner")
+	local ColorRGBSlide = Instance.new("Frame")
+	local UIStroke_3 = Instance.new("UIStroke")
+	local ColorOpc = Instance.new("Frame")
+	local UICorner_4 = Instance.new("UICorner")
+	local ColorOptSlide = Instance.new("Frame")
+	local UIStroke_4 = Instance.new("UIStroke")
+	local UIGradient_2 = Instance.new("UIGradient")
+	local UIStroke_5 = Instance.new("UIStroke")
+	local ColorOpt = Instance.new("Frame")
+	local UICorner_5 = Instance.new("UICorner")
+	local PasteButton = Instance.new("ImageButton")
+	local CopyButton = Instance.new("ImageButton")
+	local hexCode = Instance.new("Frame")
+	local UICorner_6 = Instance.new("UICorner")
+	local HexCodeText = Instance.new("TextLabel")
+
+	local OldCode = 0;
+	local CodeH,CodeV = 1, 1;
+	local IsPressM1 = false;
+	local UI_SPAWN_THREAD;
+
+	local updateColor = function()
+		local H , S , V = ColorBox.BackgroundColor3:ToHSV();
+
+		OldCode = H;
+		CodeH = S;
+		CodeV = V;
+	end;
+
+	local VisibleToggle = function(value)
+		if value then
+			ColorPickBox.BackgroundColor3 = Color3.fromHSV(OldCode,1,1);
+			ColorOpc.BackgroundColor3 = ColorBox.BackgroundColor3;
+
+			HexCodeText.Text = "#" .. tostring(ColorPickBox.BackgroundColor3:ToHex())
+
+			ColorPickerFrame.Position = UDim2.fromOffset(ColorBox.AbsolutePosition.X + (ColorPickerFrame.AbsoluteSize.X / 1.5),ColorBox.AbsolutePosition.Y);
+
+			updateColor();
+
+			if UI_SPAWN_THREAD then
+				task.cancel(UI_SPAWN_THREAD);
+				UI_SPAWN_THREAD = nil;
+			end;
+
+			UI_SPAWN_THREAD = task.spawn(function()
+				while true do task.wait()
+					Sunset:CreateAnimation(ColorPickerFrame,0.35,{
+						Position = UDim2.fromOffset(ColorBox.AbsolutePosition.X + (ColorPickerFrame.AbsoluteSize.X / 1.5),ColorBox.AbsolutePosition.Y);
+					});
+				end;
+			end);
+
+			Sunset:CreateAnimation(ColorRGBSlide,0.35,{
+				Position = UDim2.new(0.5, 0, OldCode, 0)
+			});
+
+			Sunset:CreateAnimation(MouseMovement,0.35,{
+				Position = UDim2.new(CodeH, 0, 1 - CodeV, 0)
+			})
+
+			Sunset:CreateAnimation(ColorOptSlide,0.35,{
+				Position = UDim2.new(1- Transparency, 0, 0.5, 0)
+			})
+
+			Sunset:CreateAnimation(ColorPickerFrame,0.45,{
+				Size = UDim2.new(0, 175, 0, 195),
+			});
+
+			Sunset:CreateAnimation(UIStroke,0.45,{
+				Transparency = 0
+			});
+
+			Sunset:CreateAnimation(DropShadow,0.45,{
+				ImageTransparency = 0.75
+			});
+
+			Sunset:CreateAnimation(ColorPickBox,0.45,{
+				ImageTransparency = 0,
+				BackgroundTransparency = 0
+			});
+
+			Sunset:CreateAnimation(MouseMovement,0.45,{
+				ImageTransparency = 0,
+			});
+
+			Sunset:CreateAnimation(UIStroke_2,0.45,{
+				Transparency = 0
+			});
+
+			Sunset:CreateAnimation(ColorRedGreenBlue,0.45,{
+				BackgroundTransparency = 0
+			});
+
+			Sunset:CreateAnimation(ColorRGBSlide,0.45,{
+				BackgroundTransparency = 0
+			});
+
+			Sunset:CreateAnimation(UIStroke_3,0.45,{
+				Transparency = 0.75
+			});
+
+			Sunset:CreateAnimation(ColorOpc,0.45,{
+				BackgroundTransparency = 0
+			});
+
+			Sunset:CreateAnimation(ColorOptSlide,0.45,{
+				BackgroundTransparency = 0
+			});
+
+			Sunset:CreateAnimation(UIStroke_4,0.45,{
+				Transparency = 0.75
+			});
+
+			Sunset:CreateAnimation(UIStroke_5,0.45,{
+				Transparency = 0
+			});
+
+			Sunset:CreateAnimation(PasteButton,0.45,{
+				ImageTransparency = 0.45
+			});
+
+			Sunset:CreateAnimation(CopyButton,0.45,{
+				ImageTransparency = 0.45
+			});
+
+			Sunset:CreateAnimation(hexCode,0.45,{
+				BackgroundTransparency = 0.4
+			});
+
+			Sunset:CreateAnimation(HexCodeText,0.45,{
+				TextTransparency = 0.45
+			});
+		else
+			if UI_SPAWN_THREAD then
+				task.cancel(UI_SPAWN_THREAD);
+				UI_SPAWN_THREAD = nil;
+			end;
+
+			Sunset:CreateAnimation(ColorPickerFrame,0.45,{
+				Size = UDim2.new(0, 175, 0, 0)
+			});
+
+			Sunset:CreateAnimation(UIStroke,0.45,{
+				Transparency = 1
+			});
+
+			Sunset:CreateAnimation(DropShadow,0.45,{
+				ImageTransparency = 1
+			});
+
+			Sunset:CreateAnimation(ColorPickBox,0.45,{
+				ImageTransparency = 1,
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(MouseMovement,0.45,{
+				ImageTransparency = 1,
+			});
+
+			Sunset:CreateAnimation(UIStroke_2,0.45,{
+				Transparency = 1
+			});
+
+			Sunset:CreateAnimation(ColorRedGreenBlue,0.45,{
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(ColorRGBSlide,0.45,{
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(UIStroke_3,0.45,{
+				Transparency = 1
+			});
+
+			Sunset:CreateAnimation(ColorOpc,0.45,{
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(ColorOptSlide,0.45,{
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(UIStroke_4,0.45,{
+				Transparency = 1
+			});
+
+			Sunset:CreateAnimation(UIStroke_5,0.45,{
+				Transparency = 1
+			});
+
+			Sunset:CreateAnimation(PasteButton,0.45,{
+				ImageTransparency = 1
+			});
+
+			Sunset:CreateAnimation(CopyButton,0.45,{
+				ImageTransparency = 1
+			});
+
+			Sunset:CreateAnimation(hexCode,0.45,{
+				BackgroundTransparency = 1
+			});
+
+			Sunset:CreateAnimation(HexCodeText,0.45,{
+				TextTransparency = 1
+			});
+		end;
+	end;
+
+	ColorPickerFrame.Active = true;
+	ColorPickerFrame.Name = Sunset:RandomString()
+	ColorPickerFrame.Parent = OwnWindow
+	ColorPickerFrame.AnchorPoint = Vector2.new(0.5, 0)
+	ColorPickerFrame.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+	ColorPickerFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorPickerFrame.BorderSizePixel = 0
+	ColorPickerFrame.ClipsDescendants = true
+	ColorPickerFrame.Position = UDim2.new(4,0,4,0)
+	ColorPickerFrame.Size = UDim2.new(0, 175, 0, 195)
+	ColorPickerFrame.ZIndex = 200
+	Sunset:AddDragBlacklist(ColorPickerFrame);
+
+	UICorner.CornerRadius = UDim.new(0, 2)
+	UICorner.Parent = ColorPickerFrame
+
+	UIStroke.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke.Parent = ColorPickerFrame
+
+	DropShadow.Name = Sunset:RandomString()
+	DropShadow.Parent = ColorPickerFrame
+	DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	DropShadow.BackgroundTransparency = 1.000
+	DropShadow.BorderSizePixel = 0
+	DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+	DropShadow.Rotation = 0.001
+	DropShadow.Size = UDim2.new(1, 47, 1, 47)
+	DropShadow.ZIndex = 199
+	DropShadow.Image = "rbxassetid://6014261993"
+	DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+	DropShadow.ImageTransparency = 0.750
+	DropShadow.ScaleType = Enum.ScaleType.Slice
+	DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+
+	ColorPickBox.Name = Sunset:RandomString()
+	ColorPickBox.Parent = ColorPickerFrame
+	ColorPickBox.BackgroundColor3 = Color3.fromRGB(39, 255, 35)
+	ColorPickBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorPickBox.BorderSizePixel = 0
+	ColorPickBox.Position = UDim2.new(0, 7, 0, 7)
+	ColorPickBox.Size = UDim2.new(0, 135, 0, 135)
+	ColorPickBox.ZIndex = 201
+	ColorPickBox.Image = "http://www.roblox.com/asset/?id=112554223509763"
+
+	MouseMovement.Name = Sunset:RandomString()
+	MouseMovement.Parent = ColorPickBox
+	MouseMovement.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	MouseMovement.BackgroundTransparency = 1.000
+	MouseMovement.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	MouseMovement.BorderSizePixel = 0
+	MouseMovement.Position = UDim2.new(0.822222233, 0, 0.0592592582, 0)
+	MouseMovement.Size = UDim2.new(0, 12, 0, 12)
+	MouseMovement.ZIndex = 205
+	MouseMovement.Image = "rbxassetid://4805639000"
+	MouseMovement.AnchorPoint = Vector2.new(0.5,0.5)
+
+	UICorner_2.CornerRadius = UDim.new(0, 2)
+	UICorner_2.Parent = ColorPickBox
+
+	UIStroke_2.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_2.Parent = ColorPickBox
+
+	ColorRedGreenBlue.Name = Sunset:RandomString()
+	ColorRedGreenBlue.Parent = ColorPickerFrame
+	ColorRedGreenBlue.AnchorPoint = Vector2.new(1, 0)
+	ColorRedGreenBlue.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	ColorRedGreenBlue.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorRedGreenBlue.BorderSizePixel = 0
+	ColorRedGreenBlue.Position = UDim2.new(1, -7, 0, 7)
+	ColorRedGreenBlue.Size = UDim2.new(0, 20, 0, 135)
+	ColorRedGreenBlue.ZIndex = 206
+
+	UIGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 0, 0)), ColorSequenceKeypoint.new(0.10, Color3.fromRGB(255, 153, 0)), ColorSequenceKeypoint.new(0.20, Color3.fromRGB(203, 255, 0)), ColorSequenceKeypoint.new(0.30, Color3.fromRGB(50, 255, 0)), ColorSequenceKeypoint.new(0.40, Color3.fromRGB(0, 255, 102)), ColorSequenceKeypoint.new(0.50, Color3.fromRGB(0, 255, 255)), ColorSequenceKeypoint.new(0.60, Color3.fromRGB(0, 101, 255)), ColorSequenceKeypoint.new(0.70, Color3.fromRGB(50, 0, 255)), ColorSequenceKeypoint.new(0.80, Color3.fromRGB(204, 0, 255)), ColorSequenceKeypoint.new(0.90, Color3.fromRGB(255, 0, 153)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 0, 0))}
+	UIGradient.Rotation = 90
+	UIGradient.Parent = ColorRedGreenBlue
+
+	UICorner_3.CornerRadius = UDim.new(0, 3)
+	UICorner_3.Parent = ColorRedGreenBlue
+
+	ColorRGBSlide.Name = Sunset:RandomString()
+	ColorRGBSlide.Parent = ColorRedGreenBlue
+	ColorRGBSlide.AnchorPoint = Vector2.new(0.5, 0)
+	ColorRGBSlide.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	ColorRGBSlide.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorRGBSlide.BorderSizePixel = 0
+	ColorRGBSlide.Position = UDim2.new(0.5, 0, 0.5, 0)
+	ColorRGBSlide.Size = UDim2.new(1, 5, 0, 2)
+	ColorRGBSlide.ZIndex = 207
+
+	UIStroke_3.Transparency = 0.750
+	UIStroke_3.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_3.Parent = ColorRGBSlide
+
+	ColorOpc.Name = Sunset:RandomString()
+	ColorOpc.Parent = ColorPickerFrame
+	ColorOpc.AnchorPoint = Vector2.new(0.5, 0)
+	ColorOpc.BackgroundColor3 = Color3.fromRGB(102, 255, 0)
+	ColorOpc.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorOpc.BorderSizePixel = 0
+	ColorOpc.Position = UDim2.new(0.5, 0, 0, 149)
+	ColorOpc.Size = UDim2.new(1, -15, 0, 12)
+	ColorOpc.ZIndex = 206
+
+	UICorner_4.CornerRadius = UDim.new(0, 2)
+	UICorner_4.Parent = ColorOpc
+
+	ColorOptSlide.Name = Sunset:RandomString()
+	ColorOptSlide.Parent = ColorOpc
+	ColorOptSlide.AnchorPoint = Vector2.new(0, 0.5)
+	ColorOptSlide.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	ColorOptSlide.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorOptSlide.BorderSizePixel = 0
+	ColorOptSlide.Position = UDim2.new(0.5, 0, 0.5, 0)
+	ColorOptSlide.Size = UDim2.new(0, 2, 1, 5)
+	ColorOptSlide.ZIndex = 207
+
+	UIStroke_4.Transparency = 0.750
+	UIStroke_4.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_4.Parent = ColorOptSlide
+
+	UIGradient_2.Transparency = NumberSequence.new{NumberSequenceKeypoint.new(0.00, 1.00), NumberSequenceKeypoint.new(1.00, 0.00)}
+	UIGradient_2.Parent = ColorOpc
+
+	UIStroke_5.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_5.Parent = ColorOpc
+
+	ColorOpt.Name = Sunset:RandomString()
+	ColorOpt.Parent = ColorPickerFrame
+	ColorOpt.AnchorPoint = Vector2.new(0.5, 0)
+	ColorOpt.BackgroundColor3 = Color3.fromRGB(102, 255, 0)
+	ColorOpt.BackgroundTransparency = 1.000
+	ColorOpt.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ColorOpt.BorderSizePixel = 0
+	ColorOpt.Position = UDim2.new(0.5, 0, 0, 169)
+	ColorOpt.Size = UDim2.new(1, -15, 0, 18)
+	ColorOpt.ZIndex = 206
+
+	UICorner_5.CornerRadius = UDim.new(0, 2)
+	UICorner_5.Parent = ColorOpt
+
+	PasteButton.Name = Sunset:RandomString()
+	PasteButton.Parent = ColorOpt
+	PasteButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	PasteButton.BackgroundTransparency = 1.000
+	PasteButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	PasteButton.BorderSizePixel = 0
+	PasteButton.Size = UDim2.new(1, 0, 1, 0)
+	PasteButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+	PasteButton.ZIndex = 209
+	PasteButton.Image = "rbxassetid://10709799288"
+	PasteButton.ImageTransparency = 0.450
+
+	CopyButton.Name = Sunset:RandomString()
+	CopyButton.Parent = ColorOpt
+	CopyButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	CopyButton.BackgroundTransparency = 1.000
+	CopyButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	CopyButton.BorderSizePixel = 0
+	CopyButton.Position = UDim2.new(0, 20, 0, 0)
+	CopyButton.Size = UDim2.new(1, 0, 1, 0)
+	CopyButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+	CopyButton.ZIndex = 209
+	CopyButton.Image = "rbxassetid://10709798682"
+	CopyButton.ImageTransparency = 0.450
+
+	hexCode.Name = Sunset:RandomString()
+	hexCode.Parent = ColorOpt
+	hexCode.BackgroundColor3 = Sunset.Colors.Black
+	hexCode.BackgroundTransparency = 0.400
+	hexCode.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	hexCode.BorderSizePixel = 0
+	hexCode.Position = UDim2.new(0, 43, 0, 0)
+	hexCode.Size = UDim2.new(1, -43, 1, 0)
+	hexCode.ZIndex = 209
+
+	UICorner_6.CornerRadius = UDim.new(0, 4)
+	UICorner_6.Parent = hexCode
+
+	HexCodeText.Name = Sunset:RandomString()
+	HexCodeText.Parent = hexCode
+	HexCodeText.AnchorPoint = Vector2.new(0, 0.5)
+	HexCodeText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	HexCodeText.BackgroundTransparency = 1.000
+	HexCodeText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HexCodeText.BorderSizePixel = 0
+	HexCodeText.Position = UDim2.new(0, 3, 0.5, 0)
+	HexCodeText.Size = UDim2.new(1, 0, 0.800000012, 0)
+	HexCodeText.ZIndex = 209
+	HexCodeText.FontFace = Sunset.FontSemiBold
+	HexCodeText.Text = "#fff"
+	HexCodeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+	HexCodeText.TextSize = 13.000
+	HexCodeText.TextTransparency = 0.450
+	HexCodeText.TextXAlignment = Enum.TextXAlignment.Left;
+
+	Sunset:CreateHover(CopyButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(CopyButton,0.45,{
+				ImageTransparency = 0.1
+			})
+		else
+			Sunset:CreateAnimation(CopyButton,0.45,{
+				ImageTransparency = 0.45
+			})
+		end
+	end)	
+
+	Sunset:CreateHover(PasteButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(PasteButton,0.45,{
+				ImageTransparency = 0.1
+			})
+		else
+			Sunset:CreateAnimation(PasteButton,0.45,{
+				ImageTransparency = 0.45
+			})
+		end
+	end)
+
+	PasteButton.MouseButton1Click:Connect(function()
+		if Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY then
+			local h,s,v = Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY.RGB:ToHSV();
+
+			Transparency = Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY.OPC;
+
+			OldCode = h;
+			CodeH = s;
+			CodeV = v;
+
+			HexCodeText.Text = "#" .. tostring(Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY.RGB:ToHex());
+
+			Sunset:CreateAnimation(ColorRGBSlide,0.35,{
+				Position = UDim2.new(0.5, 0, OldCode, 0)
+			});
+
+			Sunset:CreateAnimation(MouseMovement,0.35,{
+				Position = UDim2.new(CodeH, 0, 1 - CodeV, 0)
+			})
+
+			Sunset:CreateAnimation(ColorOptSlide,0.35,{
+				Position = UDim2.new(1- Transparency, 0, 0.5, 0)
+			})
+
+			Sunset:CreateAnimation(ColorPickerFrame,0.45,{
+				Size = UDim2.new(0, 175, 0, 195),
+			});
+
+			ColorPickBox.BackgroundColor3 = Color3.fromHSV(h,1,1);
+
+			ColorOpc.BackgroundColor3 = Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY.RGB;
+
+			Callback(Color3.fromHSV(OldCode,CodeH,CodeV),Transparency);
+		end;
+	end);
+
+	CopyButton.MouseButton1Click:Connect(function()
+		Sunset.GLOBAL_ENVIRONMENT.COLOR_COPY = {
+			RGB = Color3.fromHSV(OldCode,CodeH,CodeV),
+			OPC = Transparency,
+		};
+	end)
+
+	VisibleToggle(false);
+
+	Sunset:NewInput(ColorBox,function()
+		VisibleToggle(true);
+	end);
+
+	do
+		local SPAWN_THREAD;
+		ColorPickerFrame.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				IsPressM1 = true;
+
+				Sunset.GLOBAL_ENVIRONMENT.IS_HOLD_COLOR_PICKER = true;
+
+				if SPAWN_THREAD then
+					task.cancel(SPAWN_THREAD);
+					SPAWN_THREAD = nil;
+				end;
+
+				SPAWN_THREAD = task.spawn(function()
+					while IsPressM1 do task.wait(0)
+						Callback(Color3.fromHSV(OldCode,CodeH,CodeV),Transparency);
+					end;
+				end);
+			end;
+		end)
+
+		ColorPickerFrame.InputEnded:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				IsPressM1 = false;
+				Sunset.GLOBAL_ENVIRONMENT.IS_HOLD_COLOR_PICKER = false;
+
+				if SPAWN_THREAD then
+					task.cancel(SPAWN_THREAD);
+					SPAWN_THREAD = nil;
+				end;
+			end;
+		end)
+
+		UserInputService.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				if not Sunset:IsMouseOverFrame(ColorPickerFrame) then
+					VisibleToggle(false);
+				end;
+			end;
+		end)
+
+		ColorRedGreenBlue.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				IsPressM1 = true;
+
+				while (UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) or IsPressM1) do task.wait()
+					local ColorY = ColorRedGreenBlue.AbsolutePosition.Y
+					local ColorYM = ColorY + ColorRedGreenBlue.AbsoluteSize.Y;
+					local Value = math.clamp(Mouse.Y, ColorY, ColorYM)
+					local Code = ((Value - ColorY) / (ColorYM - ColorY));
+
+					local Color = Color3.fromHSV(Code, CodeH, CodeV);
+
+					Sunset:CreateAnimation(ColorRGBSlide,0.35,{
+						Position = UDim2.new(0.5, 0, Code, 0)
+					});
+
+					Sunset:CreateAnimation(ColorBox,0.5,{
+						BackgroundColor3 = Color
+					});
+
+					Sunset:CreateAnimation(ColorOpc,0.35,{
+						BackgroundColor3 = Color
+					});
+
+					Sunset:CreateAnimation(ColorPickBox,0.5,{
+						BackgroundColor3 = Color3.fromHSV(Code, 1, 1)
+					});
+
+					HexCodeText.Text = "#" .. tostring(Color:ToHex())
+
+					OldCode = Code;
+				end;
+			end;
+		end);
+
+		ColorOpc.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				IsPressM1 = true;
+
+				while (UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) or IsPressM1) do task.wait()
+					local transparency = math.clamp((((Mouse.X) - ColorOpc.AbsolutePosition.X) / ColorOpc.AbsoluteSize.X), 0, 1);
+
+					Sunset:CreateAnimation(ColorOptSlide,0.35,{
+						Position = UDim2.new(transparency, 0, 0.5, 0)
+					});
+
+					HexCodeText.Text = "#" .. tostring(ColorBox.BackgroundColor3:ToHex())
+
+					Transparency = (1 - transparency);
+				end;
+			end;
+		end);
+
+		ColorPickBox.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+				IsPressM1 = true;
+
+				while (UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) or IsPressM1) do task.wait();
+					local PosX = ColorPickBox.AbsolutePosition.X
+					local ScaleX = PosX + ColorPickBox.AbsoluteSize.X
+					local Value, PosY = math.clamp(Mouse.X, PosX, ScaleX), ColorPickBox.AbsolutePosition.Y
+					local ScaleY = PosY + ColorPickBox.AbsoluteSize.Y
+					local Vals = math.clamp(Mouse.Y, PosY, ScaleY)
+
+					CodeH = (Value - PosX) / (ScaleX - PosX);
+					CodeV = (1 - ((Vals - PosY) / (ScaleY - PosY)));
+
+					Sunset:CreateAnimation(ColorBox,0.5,{
+						BackgroundColor3 = Color3.fromHSV(OldCode, CodeH, CodeV)
+					});
+
+					Sunset:CreateAnimation(ColorOpc,0.35,{
+						BackgroundColor3 = Color3.fromHSV(OldCode, CodeH, CodeV)
+					});
+
+					HexCodeText.Text = "#" .. tostring(Color3.fromHSV(OldCode, CodeH, CodeV):ToHex())
+
+					Sunset:CreateAnimation(MouseMovement,0.2,nil,{
+						Position = UDim2.new(CodeH, 0, 1 - CodeV, 0)
+					})
+				end
+			end
+		end)
+	end;
+
+	return {
+		set_opc = function(v)
+			Transparency = v;
+		end,
+	}
+end;
+
+function Sunset:RandomStr(len: number): string
+	local main = "";
+
+	for i = 1 , len do
+		local max = #Sunset.Ascii;
+		local rand = math.random(1,max);
+
+		main = main .. Sunset.Ascii:sub(rand,rand);
+	end;
+
+	return main;
+end;
+
+function Sunset:AddDragBlacklist(Frame: Frame)
+	Frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseMovement then
+			local finder = table.find(Sunset.DragBlacklist , Frame);
+
+			if not finder then
+				table.insert(Sunset.DragBlacklist , Frame);
+			end;
+		end;
+	end);
+
+	Frame.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.MouseMovement then
+			local finder = table.find(Sunset.DragBlacklist , Frame);
+
+			if finder then
+				table.remove(Sunset.DragBlacklist , finder);
+			end;
+		end;
+	end);
+end;
+
+function Sunset:ProtectText(Label: TextLabel,Text: string)
+	Label.RichText = true;
+
+	local MainText = string.gsub(Text,'.',function(t)
+		if not string.find(t,"[<>()\"']") then
+			return string.format('<font %s="%s">%s</font>',Sunset:RandomStr(5),Sunset:RandomStr(5),t)
+		end;
+		return t;
+	end);
+
+	Label.Text = MainText;
+end;
+
+function Sunset:CreateDropdown(Parent: Frame, Default: string | {[string]: boolean}, Multiplier: boolean, AutoUpdate: boolean,Callback: (data: any) -> any)
+	local Window = Sunset:GetWindowFromElement(Parent);
+	local Data = {};
+	local Selected = (Multiplier and {}) or nil;
+
+	local DropdownItemFrame = Instance.new("Frame")
+	local UICorner = Instance.new("UICorner")
+	local UIStroke = Instance.new("UIStroke")
+	local DropShadow = Instance.new("ImageLabel")
+	local ScrollingFrame = Instance.new("ScrollingFrame")
+	local UIListLayout = Instance.new("UIListLayout")
+	local SPAWN_THREAD;
+
+	Sunset:AddDragBlacklist(DropdownItemFrame);
+
+	local Toggle = function(value)
+		if value then
+			if SPAWN_THREAD then
+				task.cancel(SPAWN_THREAD);
+				SPAWN_THREAD = nil;
+			end;
+
+			SPAWN_THREAD = task.spawn(function()
+				while true do task.wait()
+					local baseSize = UIListLayout.AbsoluteContentSize.Y + 10;
+
+					DropdownItemFrame.Position = UDim2.fromOffset(Parent.AbsolutePosition.X,Parent.AbsolutePosition.Y + (Parent.AbsoluteSize.Y * 5))
+
+					Sunset:CreateAnimation(DropdownItemFrame,0.35,{
+						Size = UDim2.new(0, 175, 0, math.clamp(baseSize,0,200))
+					})
+				end;
+			end)
+
+			Sunset:CreateAnimation(UIStroke,0.35,{
+				Transparency = 0
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.35,{
+				ImageTransparency = 0.75
+			})
+		else
+			if SPAWN_THREAD then
+				task.cancel(SPAWN_THREAD);
+				SPAWN_THREAD = nil;
+			end;
+
+			Sunset:CreateAnimation(DropdownItemFrame,0.35,{
+				Size = UDim2.new(0, 175, 0, 0)
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.35,{
+				Transparency = 1
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.35,{
+				ImageTransparency = 1
+			})
+		end;
+	end;
+
+	Toggle(false);
+
+	DropdownItemFrame.Name = Sunset:RandomString()
+	DropdownItemFrame.Parent = Window
+	DropdownItemFrame.AnchorPoint = Vector2.new(0, 0)
+	DropdownItemFrame.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+	DropdownItemFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	DropdownItemFrame.BorderSizePixel = 0
+	DropdownItemFrame.ClipsDescendants = true
+	DropdownItemFrame.Position = UDim2.new(4,0,4,0)
+	DropdownItemFrame.Size = UDim2.new(0, 175, 0, 100)
+	DropdownItemFrame.ZIndex = 100
+
+	UICorner.CornerRadius = UDim.new(0, 2)
+	UICorner.Parent = DropdownItemFrame
+
+	UIStroke.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke.Parent = DropdownItemFrame
+
+	DropShadow.Name = Sunset:RandomString()
+	DropShadow.Parent = DropdownItemFrame
+	DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	DropShadow.BackgroundTransparency = 1.000
+	DropShadow.BorderSizePixel = 0
+	DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+	DropShadow.Rotation = 0.001
+	DropShadow.Size = UDim2.new(1, 47, 1, 47)
+	DropShadow.ZIndex = 99
+	DropShadow.Image = "rbxassetid://6014261993"
+	DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+	DropShadow.ImageTransparency = 0.750
+	DropShadow.ScaleType = Enum.ScaleType.Slice
+	DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+
+	ScrollingFrame.Parent = DropdownItemFrame
+	ScrollingFrame.Active = true
+	ScrollingFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	ScrollingFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	ScrollingFrame.BackgroundTransparency = 1.000
+	ScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ScrollingFrame.BorderSizePixel = 0
+	ScrollingFrame.ClipsDescendants = false
+	ScrollingFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	ScrollingFrame.Size = UDim2.new(1, -5, 1, -5)
+	ScrollingFrame.ZIndex = 109
+	ScrollingFrame.ScrollBarThickness = 0
+
+	UIListLayout.Parent = ScrollingFrame
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	UIListLayout.Padding = UDim.new(0, 5)
+
+	UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+		ScrollingFrame.CanvasSize = UDim2.fromOffset(0,UIListLayout.AbsoluteContentSize.Y + 4)
+	end)
+
+	local new_button = function()
+		local db_selected = Instance.new("TextButton")
+
+		db_selected.Name = Sunset:RandomString()
+		db_selected.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		db_selected.BackgroundTransparency = 1.000
+		db_selected.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		db_selected.BorderSizePixel = 0
+		db_selected.Size = UDim2.new(1, 0, 0, 10)
+		db_selected.ZIndex = 110
+		db_selected.FontFace = Sunset.FontSemiBold
+		db_selected.TextColor3 = Sunset.Colors.Main
+		db_selected.TextSize = 12.000
+		db_selected.TextXAlignment = Enum.TextXAlignment.Left
+
+		return db_selected;
+	end;
+
+	local func;
+	local res = Sunset:CreateResponse({
+		set_data = function(v)
+			Data = v;
+		end,
+		on_toggle = function(cb)
+			func = cb;
+		end,
+		change_default = function(v)
+			Default = v;
+		end,
+		refresh = function()
+			for i,v in next , ScrollingFrame:GetChildren() do
+				if v:IsA('TextButton') then
+					v:Destroy();
+				end;
+			end;
+
+			local selectedmem;
+
+			for i,v in next , Data do
+				local bth = new_button();
+
+				bth.Text = tostring(v);
+
+				bth.Parent = ScrollingFrame;
+
+				if Multiplier then
+					if (typeof(Default) == 'table' and (Default[v] or table.find(Default,v))) or Default == v then
+						Selected[v] = true
+						bth.TextColor3 = Sunset.Colors.Main;
+					else
+						bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+						Selected[v] = false
+					end
+
+					bth.MouseButton1Click:Connect(function()
+						Selected[v] = not Selected[v];
+
+						if Selected[v] then
+							bth.TextColor3 = Sunset.Colors.Main;
+						else
+							bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+						end;
+
+						Callback(Selected);
+					end)
+				else
+					if v == Default then
+						selectedmem = bth;
+						Selected = v;
+
+						bth.TextColor3 = Sunset.Colors.Main;
+					else
+						bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+					end;
+
+					bth.MouseButton1Click:Connect(function()
+						if selectedmem then
+							selectedmem.TextColor3 = Color3.fromRGB(255, 255, 255);
+						end;
+
+						bth.TextColor3 = Sunset.Colors.Main;
+						selectedmem = bth;
+						Selected = v;
+
+						Callback(v);
+					end)
+				end;
+			end;
+
+			Callback(Selected);
+		end,
+	});
+
+	Sunset:NewInput(Parent,function()
+		if AutoUpdate then
+			res:refresh();
+		end;
+
+		func(true);
+		Toggle(true);
+	end);
+
+	UserInputService.InputBegan:Connect(function(Input)
+		if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+			if not Sunset:IsMouseOverFrame(DropdownItemFrame) then
+				func(false);
+				Toggle(false);
+			end;
+		end;
+	end);
+
+	return res;
+end;
+
+function Sunset:CreateElements(Parent : Frame , ZIndex : number , Event : BindableEvent,SearchAPI: {Path: string,Memory : (name:string) -> any}) : Elements
+	local elements = {};
+	local FatalWindow = Sunset:GetWindowFromElement(Parent);
+
+	function elements:AddToggle(Config: Toggle)
+		Config = Config or {};
+		Config.Name = Config.Name or "Toggle";
+		Config.Default = Config.Default or false;
+		Config.Risky = Config.Risky or false;
+		Config.Option = Config.Option or false;
+		Config.Callback = Config.Callback or function(bool) end;
+		Config.Flag = Config.Flag or nil;
+
+		local Toggle = Instance.new("Frame")
+		local Toggle_Name = Instance.new("TextLabel")
+		local ValueFrame = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local ValueIcon = Instance.new("ImageLabel")
+		local OptionButton = Instance.new("ImageButton")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		Toggle.Name = Sunset:RandomString()
+		Toggle.Parent = Parent
+		Toggle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Toggle.BackgroundTransparency = 1.000
+		Toggle.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Toggle.BorderSizePixel = 0
+		Toggle.Size = UDim2.new(1, -25, 0, 17)
+		Toggle.ZIndex = ZIndex + 1
+		Sunset:AddDragBlacklist(Toggle);
+
+		Toggle_Name.Name = Sunset:RandomString()
+		Toggle_Name.Parent = Toggle
+		Toggle_Name.AnchorPoint = Vector2.new(0, 0.5)
+		Toggle_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Toggle_Name.BackgroundTransparency = 1.000
+		Toggle_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Toggle_Name.BorderSizePixel = 0
+		Toggle_Name.Position = UDim2.new(0, 0, 0.5, 0)
+		Toggle_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		Toggle_Name.ZIndex = ZIndex + 2
+		Toggle_Name.FontFace = Sunset.FontSemiBold;
+		Toggle_Name.TextColor3 = (Config.Risky and Color3.fromRGB(255, 160, 92)) or Color3.fromRGB(255, 255, 255)
+		Toggle_Name.TextSize = 13.000
+		Toggle_Name.TextTransparency = 1
+		Toggle_Name.TextXAlignment = Enum.TextXAlignment.Left;
+
+		Sunset:ProtectText(Toggle_Name,Config.Name);
+
+		ValueFrame.Name = Sunset:RandomString()
+		ValueFrame.Parent = Toggle
+		ValueFrame.AnchorPoint = Vector2.new(1, 0.5)
+		ValueFrame.BackgroundColor3 = Sunset.Colors.Black
+		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueFrame.BorderSizePixel = 0
+		ValueFrame.Position = UDim2.new(1, -3, 0.5, 0)
+		ValueFrame.Size = UDim2.new(0.899999976, 0, 0.899999976, 0)
+		ValueFrame.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		ValueFrame.ZIndex = ZIndex + 2
+		ValueFrame.BackgroundTransparency = 1;
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = ValueFrame
+
+		ValueIcon.Name = Sunset:RandomString()
+		ValueIcon.Parent = ValueFrame
+		ValueIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+		ValueIcon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ValueIcon.BackgroundTransparency = 1.000
+		ValueIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueIcon.BorderSizePixel = 0
+		ValueIcon.Position = UDim2.new(0.5, 0, 0.5, 0)
+		ValueIcon.Size = UDim2.new(0.699999988, 0, 0.699999988, 0)
+		ValueIcon.ZIndex = ZIndex + 2
+		ValueIcon.Image = "rbxassetid://10709790644"
+		ValueIcon.ImageTransparency = 1;
+
+		OptionButton.Name = Sunset:RandomString()
+		OptionButton.Parent = Toggle
+		OptionButton.AnchorPoint = Vector2.new(1, 0.5)
+		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		OptionButton.BackgroundTransparency = 1.000
+		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BorderSizePixel = 0
+		OptionButton.Position = UDim2.new(1, -25, 0.5, 0)
+		OptionButton.Size = UDim2.new(0.899999976, 0, 0.899999976, 0)
+		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+		OptionButton.ImageTransparency = 1
+		OptionButton.ZIndex = ZIndex + 4
+		OptionButton.Visible = Config.Option;
+
+		local toggleImg = function(value)
+			if value then
+				Sunset:CreateAnimation(ValueIcon,0.45,{
+					ImageTransparency = 0,
+					ImageColor3 = Sunset.Colors.Main,
+					Size = UDim2.new(0.8, 0, 0.8, 0),
+					Rotation = 0,
+				})
+			else
+				Sunset:CreateAnimation(ValueIcon,0.45,{
+					ImageTransparency = 1,
+					ImageColor3 = Color3.fromRGB(255, 255, 255),
+					Size = UDim2.new(0.699999988, 0, 0.699999988, 0),
+					Rotation = 15
+				})
+			end;
+		end;
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(ValueIcon,0.45,{
+					ImageTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = (Config.Option and 0.600) or 1
+				})
+
+				toggleImg(Config.Default)
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 0,
+				})
+
+				Sunset:CreateAnimation(Toggle_Name,0.45,{
+					TextTransparency = 0.200
+				})
+			else
+				Sunset:CreateAnimation(Toggle_Name,0.45,{
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(ValueIcon,0.45,{
+					ImageTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(ValueIcon,0.45,{
+					ImageTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = 1
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'))
+
+		toggleImg(Config.Default);
+
+		Sunset:CreateHover(ValueFrame,function(b)
+			if not Config.Default then
+				if b then
+					Sunset:CreateAnimation(ValueIcon,0.45,{
+						ImageTransparency = 0.5,
+						ImageColor3 = Color3.fromRGB(255, 255, 255),
+						Size = UDim2.new(0.7, 0, 0.7, 0),
+						Rotation = 0
+					})
+				else
+					Sunset:CreateAnimation(ValueIcon,0.45,{
+						ImageTransparency = 1,
+						ImageColor3 = Color3.fromRGB(255, 255, 255),
+						Size = UDim2.new(0.699999988, 0, 0.699999988, 0),
+						Rotation = 15
+					})
+				end;
+			end;
+		end)
+
+		Sunset:NewInput(ValueFrame,function()
+			Config.Default = not Config.Default;
+			toggleImg(Config.Default);
+			Config.Callback(Config.Default)
+		end);
+
+		local Respons = Sunset:CreateResponse({
+			Rename = function(new_name)
+				Toggle_Name.Text = new_name;
+				Sunset:ProtectText(Toggle_Name,new_name);
+			end,
+			GetValue = function()
+				return Config.Default;
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			SetValue = function(v)
+				local IsSame = v == Config.Default;
+
+				Config.Default = v;
+
+				toggleImg(Config.Default);
+
+				if not IsSame then
+					Config.Callback(Config.Default);
+				end;
+			end,
+			Flag = Config.Flag and (Config.Flag.."Toggle"),
+			Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+		});
+
+		if Config.Flag then
+			Sunset.WindowFlags[FatalWindow][Config.Flag.."Toggle"] = Respons;
+		end;
+
+		return Respons;
+	end;
+
+	function elements:AddSlider(Config: Slider)
+		Config = Config or {};
+		Config.Name = Config.Name or "Slider";
+		Config.Type = Config.Type or "";
+		Config.Default = Config.Default or 50;
+		Config.Min = Config.Min or 0;
+		Config.Max = Config.Max or 100;
+		Config.Round = Config.Round or 0;
+		Config.Risky = Config.Risky or false;
+		Config.Option = Config.Option or false;
+		Config.Callback = Config.Callback or function(number) end;
+		Config.Flag = Config.Flag or nil;
+
+		local Slider = Instance.new("Frame")
+		local Slider_Name = Instance.new("TextLabel")
+		local ValueFrame = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local OptionButton = Instance.new("ImageButton")
+		local boxli = Instance.new("Frame")
+		local UICorner_2 = Instance.new("UICorner")
+		local ValueText = Instance.new("TextLabel")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		Slider.Name = Sunset:RandomString()
+		Slider.Parent = Parent
+		Slider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Slider.BackgroundTransparency = 1.000
+		Slider.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Slider.BorderSizePixel = 0
+		Slider.Size = UDim2.new(1, -25, 0, 17)
+		Slider.ZIndex = ZIndex + 1
+
+		Sunset:AddDragBlacklist(Slider);
+
+		Slider_Name.Name = Sunset:RandomString()
+		Slider_Name.Parent = Slider
+		Slider_Name.AnchorPoint = Vector2.new(0, 0.5)
+		Slider_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Slider_Name.BackgroundTransparency = 1.000
+		Slider_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Slider_Name.BorderSizePixel = 0
+		Slider_Name.Position = UDim2.new(0, 0, 0.5, 0)
+		Slider_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		Slider_Name.ZIndex = ZIndex + 2
+		Slider_Name.FontFace = Sunset.FontSemiBold
+		Slider_Name.Text = Config.Name
+		Slider_Name.TextColor3 = (Config.Risky and Color3.fromRGB(255, 160, 92)) or Color3.fromRGB(255, 255, 255)
+		Slider_Name.TextSize = 13.000
+		Slider_Name.TextTransparency = 0.200
+		Slider_Name.TextXAlignment = Enum.TextXAlignment.Left
+
+		ValueFrame.Name = Sunset:RandomString()
+		ValueFrame.Parent = Slider
+		ValueFrame.AnchorPoint = Vector2.new(1, 0.5)
+		ValueFrame.BackgroundColor3 = Sunset.Colors.Black
+		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueFrame.BorderSizePixel = 0
+		ValueFrame.Position = UDim2.new(1, -3, 0.5, 0)
+		ValueFrame.Size = UDim2.new(0, 85, 0.600000024, 0)
+		ValueFrame.ZIndex = ZIndex + 2
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = ValueFrame
+
+		OptionButton.Name = Sunset:RandomString()
+		OptionButton.Parent = ValueFrame
+		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
+		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		OptionButton.BackgroundTransparency = 1.000
+		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BorderSizePixel = 0
+		OptionButton.Position = UDim2.new(0, -20, 0.5, 0)
+		OptionButton.Size = UDim2.new(0, 13, 0, 13)
+		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+		OptionButton.ImageTransparency = 0.600
+		OptionButton.Visible = Config.Option;
+		OptionButton.ZIndex = ZIndex + 1;
+
+		boxli.Name = Sunset:RandomString()
+		boxli.Parent = ValueFrame
+		boxli.BackgroundColor3 = Sunset.Colors.Main
+		boxli.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		boxli.BorderSizePixel = 0
+		boxli.Size = UDim2.new((Config.Default - Config.Min) / (Config.Max - Config.Min), 0, 1, 0)
+		boxli.ZIndex = ZIndex + 3
+
+		UICorner_2.CornerRadius = UDim.new(0, 2)
+		UICorner_2.Parent = boxli
+
+		ValueText.Name = Sunset:RandomString()
+		ValueText.Parent = ValueFrame
+		ValueText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ValueText.BackgroundTransparency = 1.000
+		ValueText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueText.BorderSizePixel = 0
+		ValueText.Size = UDim2.new(1, 0, 1, 0)
+		ValueText.ZIndex = ZIndex + 4
+		ValueText.FontFace = Sunset.FontSemiBold
+		ValueText.Text = string.format('%s%s',tostring(Config.Default),tostring(Config.Type));
+		ValueText.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ValueText.TextSize = 9.000
+		ValueText.TextStrokeTransparency = 0.850;
+		ValueText.TextTransparency = 0;
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(boxli,0.45,{
+					BackgroundTransparency = 0,
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = (Config.Option and 0.600) or 1
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 0,
+				})
+
+				Sunset:CreateAnimation(Slider_Name,0.45,{
+					TextTransparency = 0.200
+				})
+
+				Sunset:CreateAnimation(ValueText,0.45,{
+					TextStrokeTransparency = 0.850,
+					TextTransparency = 0;
+				})
+			else
+				Sunset:CreateAnimation(ValueText,0.45,{
+					TextStrokeTransparency = 1,
+					TextTransparency = 1;
+				})
+
+				Sunset:CreateAnimation(Slider_Name,0.45,{
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(boxli,0.45,{
+					BackgroundTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = 1
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'))
+
+		local IsHold = false;
+
+		local function update(Input)
+			local SizeScale = math.clamp((((Input.Position.X) - ValueFrame.AbsolutePosition.X) / ValueFrame.AbsoluteSize.X), 0, 1);
+			local Main = ((Config.Max - Config.Min) * SizeScale) + Config.Min;
+			local Value = Sunset:Rounding(Main,Config.Round);
+			local PositionX = UDim2.fromScale(SizeScale, 1);
+			local normalized = (Value - Config.Min) / (Config.Max - Config.Min);
+
+			TweenService:Create(boxli , TweenInfo.new(0.2),{
+				Size = UDim2.new(normalized, 0, 1, 0)
+			}):Play();
+
+			Config.Default = Value;
+			ValueText.Text = string.format('%s%s',tostring(Config.Default),tostring(Config.Type));
+
+			Config.Callback(Value)
+		end;
+
+		do
+			ValueFrame.InputBegan:Connect(function(Input)
+				if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+					IsHold = true
+					update(Input)
+				end
+			end)
+
+			ValueFrame.InputEnded:Connect(function(Input)
+				if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
+					if UserInputService.TouchEnabled then
+						if not Sunset:IsMouseOverFrame(ValueFrame) then
+							IsHold = false
+						end;
+					else
+						IsHold = false
+					end;
+				end
+			end)
+
+			UserInputService.InputChanged:Connect(function(Input)
+				if IsHold then
+					if (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch)  then
+						if UserInputService.TouchEnabled then
+							if not Sunset:IsMouseOverFrame(ValueFrame) then
+								IsHold = false
+							else
+								update(Input)
+							end;
+						else
+							update(Input)
+						end;
+					end;
+				end;
+			end);
+		end;
+
+		local Respons = Sunset:CreateResponse({
+			Rename = function(new_name)
+				Slider_Name.Text = new_name
+			end,
+			GetValue = function()
+				return Config.Default;
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			SetValue = function(v)
+				local IsSame = v == Config.Default;
+
+				Config.Default = v;
+
+				TweenService:Create(boxli , TweenInfo.new(0.2),{
+					Size = UDim2.new((Config.Default - Config.Min) / (Config.Max - Config.Min), 0, 1, 0)
+				}):Play();
+
+				Config.Default = v;
+				ValueText.Text = string.format('%s%s',tostring(Config.Default),tostring(Config.Type));
+
+				if not IsSame then
+					Config.Callback(v);
+				end;
+			end,
+			Flag = Config.Flag and Config.Flag.."Slider",
+			Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+		});
+
+		if Config.Flag then
+			Sunset.WindowFlags[FatalWindow][Config.Flag.."Slider"] = Respons;
+		end;
+
+		return Respons;
+	end;
+
+	function elements:AddButton(Config: Button)
+		Config = Config or {};
+		Config.Name = Config.Name or "Slider";
+		Config.Risky = Config.Risky or false;
+		Config.Callback = Config.Callback or function() end;
+
+		local Button = Instance.new("Frame")
+		local Button_Name = Instance.new("TextLabel")
+		local UICorner = Instance.new("UICorner")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		Button.Name = Sunset:RandomString()
+		Button.Parent = Parent
+		Button.BackgroundColor3 = Sunset.Colors.Black
+		Button.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Button.BorderSizePixel = 0
+		Button.Size = UDim2.new(1, -25, 0, 25)
+		Button.ZIndex = ZIndex + 1
+		Sunset:AddDragBlacklist(Button);
+
+		Button_Name.Name = Sunset:RandomString()
+		Button_Name.Parent = Button
+		Button_Name.AnchorPoint = Vector2.new(0, 0.5)
+		Button_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Button_Name.BackgroundTransparency = 1.000
+		Button_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Button_Name.BorderSizePixel = 0
+		Button_Name.Position = UDim2.new(0, 0, 0.5, 0)
+		Button_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		Button_Name.ZIndex = ZIndex + 2
+		Button_Name.FontFace = Sunset.FontSemiBold
+		Button_Name.Text = Config.Name
+		Button_Name.TextColor3 = (Config.Risky and Color3.fromRGB(255, 160, 92)) or Color3.fromRGB(255, 255, 255)
+		Button_Name.TextSize = 12.000
+		Button_Name.TextTransparency = 0.400
+		Sunset:ProtectText(Button_Name,Config.Name);
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = Button;
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(Button_Name,0.45,{
+					TextTransparency = 0.4,
+				})
+
+				Sunset:CreateAnimation(Button,0.45,{
+					BackgroundTransparency = 0,
+				})
+			else
+				Sunset:CreateAnimation(Button_Name,0.45,{
+					TextTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(Button,0.45,{
+					BackgroundTransparency = 1,
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'));
+
+		Sunset:CreateHover(Button,function(value)
+			if value then
+				Sunset:CreateAnimation(Button,0.45,{
+					BackgroundColor3 = Color3.fromRGB(14, 14, 14)
+				})
+			else
+				Sunset:CreateAnimation(Button,0.45,{
+					BackgroundColor3 = Sunset.Colors.Black
+				})
+			end;
+		end)
+
+		Sunset:NewInput(Button,function()
+			Config.Callback();
+		end)
+
+		return Sunset:CreateResponse({
+			Rename = function(new_name)
+				Button_Name.Text = new_name
+				Sunset:ProtectText(Button_Name,new_name);
+			end,
+			GetValue = function()
+				return Config.Default;
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			Fire = Config.Callback,
+		})
+	end;
+
+	function elements:AddColorPicker(Config: ColorPicker)
+		Config = Config or {};
+		Config.Name = Config.Name or "Color Picker";
+		Config.Option = Config.Option or false;
+		Config.Default = Config.Default or Color3.fromRGB(255, 255, 255);
+		Config.Callback = Config.Callback or function(number) end;
+		Config.Transparency = Config.Transparency or 0;
+		Config.Flag = Config.Flag or nil;
+
+		local ColorPicker = Instance.new("Frame")
+		local ColorPicker_Name = Instance.new("TextLabel")
+		local ValueFrame = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local OptionButton = Instance.new("ImageButton")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		ColorPicker.Name = Sunset:RandomString()
+		ColorPicker.Parent = Parent
+		ColorPicker.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ColorPicker.BackgroundTransparency = 1.000
+		ColorPicker.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ColorPicker.BorderSizePixel = 0
+		ColorPicker.Size = UDim2.new(1, -25, 0, 17)
+		ColorPicker.ZIndex = ZIndex + 1
+		Sunset:AddDragBlacklist(ColorPicker);
+
+		ColorPicker_Name.Name = Sunset:RandomString()
+		ColorPicker_Name.Parent = ColorPicker
+		ColorPicker_Name.AnchorPoint = Vector2.new(0, 0.5)
+		ColorPicker_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ColorPicker_Name.BackgroundTransparency = 1.000
+		ColorPicker_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ColorPicker_Name.BorderSizePixel = 0
+		ColorPicker_Name.Position = UDim2.new(0, 0, 0.5, 0)
+		ColorPicker_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		ColorPicker_Name.ZIndex = ZIndex + 2
+		ColorPicker_Name.FontFace = Sunset.FontSemiBold
+		ColorPicker_Name.Text = Config.Name
+		ColorPicker_Name.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ColorPicker_Name.TextSize = 13.000
+		ColorPicker_Name.TextTransparency = 0.200
+		ColorPicker_Name.TextXAlignment = Enum.TextXAlignment.Left
+		ColorPicker_Name.ZIndex = ZIndex + 2
+
+		ValueFrame.Name = Sunset:RandomString()
+		ValueFrame.Parent = ColorPicker
+		ValueFrame.AnchorPoint = Vector2.new(1, 0.5)
+		ValueFrame.BackgroundColor3 = Config.Default
+		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueFrame.BorderSizePixel = 0
+		ValueFrame.Position = UDim2.new(1, -3, 0.5, 0)
+		ValueFrame.Size = UDim2.new(0, 35, 0.699999988, 0)
+		ValueFrame.ZIndex = ZIndex + 3
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = ValueFrame
+
+		OptionButton.Name = Sunset:RandomString()
+		OptionButton.Parent = ValueFrame
+		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
+		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		OptionButton.BackgroundTransparency = 1.000
+		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BorderSizePixel = 0
+		OptionButton.Position = UDim2.new(0, -20, 0.5, 0)
+		OptionButton.Size = UDim2.new(0, 13, 0, 13)
+		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+		OptionButton.ImageTransparency = 0.600
+		OptionButton.ZIndex = 7;
+
+		local res = Sunset:CreateColorPicker(ValueFrame,Config.Transparency,function(rgb,opc)
+			ValueFrame.BackgroundColor3 = rgb;
+			ValueFrame.BackgroundTransparency = opc;
+
+			task.spawn(Config.Callback,rgb,opc)
+		end);
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(ColorPicker_Name,0.45,{
+					TextTransparency = 0.2,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					Size = UDim2.new(0, 35, 0.7, 0)
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = (Config.Option and 0.6) or 1,
+				})
+			else
+				Sunset:CreateAnimation(ColorPicker_Name,0.45,{
+					TextTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					Size = UDim2.new(0, 35, 0, 0)
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = 1,
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'));
+
+		local Respons = Sunset:CreateResponse({
+			Rename = function(new_name)
+				ColorPicker.Text = new_name
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			SetValue = function(rgb,opc)
+				local IsSame = ValueFrame.BackgroundColor3 == rgb or ValueFrame.BackgroundTransparency == opc;
+
+				ValueFrame.BackgroundColor3 = rgb; 
+				ValueFrame.BackgroundTransparency = opc;
+				res.set_opc(opc);
+
+				if not IsSame then
+					task.spawn(Config.Callback,rgb,opc)
+				end;
+			end,
+			GetValue = function()
+				return {
+					Color = ValueFrame.BackgroundColor3,
+					Transparency = ValueFrame.BackgroundTransparency
+				};
+			end,
+			Flag = Config.Flag and Config.Flag.."ColorPicker",
+			Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+		});
+
+		if Config.Flag then
+			Sunset.WindowFlags[FatalWindow][Config.Flag.."ColorPicker"] = Respons;
+		end;
+
+		return Respons;
+	end;
+
+	function elements:AddDropdown(Config: Dropdown)
+		Config = Config or {};
+		Config.Name = Config.Name or "Dropdown";
+		Config.Option = Config.Option or false;
+		Config.Default = Config.Default or nil;
+		Config.Callback = Config.Callback or function(any) end;
+		Config.Values = Config.Values or {};
+		Config.Multi = Config.Multi or false;
+
+		local DataParser = function(value)
+			if not value then return 'None'; end;
+
+			local Out;
+
+			if typeof(value) == 'table' then
+				if #value > 0 then
+					local x = {};
+
+					for i,v in next , value do
+						table.insert(x , tostring(v))
+					end;
+
+					Out = table.concat(x,' , ');
+				else
+					local x = {};
+
+					for i,v in next , value do
+						if v == true then
+							table.insert(x , tostring(i));
+						end			
+					end;
+
+					Out = table.concat(x,' , ');
+				end;
+			else
+				Out = tostring(value);
+			end;
+
+			return Out;
+		end;
+
+		local Dropdown = Instance.new("Frame")
+		local Dropdown_Name = Instance.new("TextLabel")
+		local ValueFrame = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local OptionButton = Instance.new("ImageButton")
+		local icon = Instance.new("ImageLabel")
+		local Value_Text = Instance.new("TextLabel")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		Dropdown.Name = Sunset:RandomString()
+		Dropdown.Parent = Parent
+		Dropdown.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Dropdown.BackgroundTransparency = 1.000
+		Dropdown.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Dropdown.BorderSizePixel = 0
+		Dropdown.Size = UDim2.new(1, -25, 0, 17)
+		Dropdown.ZIndex = ZIndex + 3
+		Sunset:AddDragBlacklist(Dropdown);
+
+		Dropdown_Name.Name = Sunset:RandomString()
+		Dropdown_Name.Parent = Dropdown
+		Dropdown_Name.AnchorPoint = Vector2.new(0, 0.5)
+		Dropdown_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Dropdown_Name.BackgroundTransparency = 1.000
+		Dropdown_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Dropdown_Name.BorderSizePixel = 0
+		Dropdown_Name.Position = UDim2.new(0, 0, 0, 8)
+		Dropdown_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		Dropdown_Name.ZIndex = 7
+		Dropdown_Name.FontFace = Sunset.FontSemiBold
+		Dropdown_Name.Text = Config.Name
+		Dropdown_Name.TextColor3 = Color3.fromRGB(255, 255, 255)
+		Dropdown_Name.TextSize = 13.000
+		Dropdown_Name.TextTransparency = 0.200
+		Dropdown_Name.TextXAlignment = Enum.TextXAlignment.Left
+		Dropdown_Name.ZIndex = ZIndex + 4
+		Sunset:ProtectText(Dropdown_Name,Config.Name);
+
+		ValueFrame.Name = Sunset:RandomString()
+		ValueFrame.Parent = Dropdown
+		ValueFrame.AnchorPoint = Vector2.new(1, 0.5)
+		ValueFrame.BackgroundColor3 = Sunset.Colors.Black
+		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueFrame.BorderSizePixel = 0
+		ValueFrame.Position = UDim2.new(1, -3, 0.5, 0)
+		ValueFrame.Size = UDim2.new(0, 75, 0.925000012, 0)
+		ValueFrame.ZIndex = ZIndex + 4
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = ValueFrame
+
+		OptionButton.Name = Sunset:RandomString()
+		OptionButton.Parent = ValueFrame
+		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
+		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		OptionButton.BackgroundTransparency = 1.000
+		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BorderSizePixel = 0
+		OptionButton.Position = UDim2.new(0, -20, 0, 7)
+		OptionButton.Size = UDim2.new(0, 13, 0, 13)
+		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+		OptionButton.ImageTransparency = 0.600
+		OptionButton.ZIndex = 8
+		OptionButton.Visible = Config.Option;
+
+		icon.Name = Sunset:RandomString()
+		icon.Parent = ValueFrame
+		icon.AnchorPoint = Vector2.new(1, 0)
+		icon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		icon.BackgroundTransparency = 1.000
+		icon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		icon.BorderSizePixel = 0
+		icon.Position = UDim2.new(1, 0, 0, 0)
+		icon.Size = UDim2.new(0,15,0,15)
+		icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		icon.ZIndex = ZIndex + 5
+		icon.Image = "rbxassetid://10709790948"
+
+		Value_Text.Name = Sunset:RandomString()
+		Value_Text.Parent = ValueFrame
+		Value_Text.AnchorPoint = Vector2.new(0, 0.5)
+		Value_Text.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Value_Text.BackgroundTransparency = 1.000
+		Value_Text.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Value_Text.BorderSizePixel = 0
+		Value_Text.Position = UDim2.new(0, 3, 0.5, 0)
+		Value_Text.Size = UDim2.new(1, -18, 0.800000012, 0)
+		Value_Text.ZIndex = ZIndex + 5
+		Value_Text.FontFace = Sunset.FontSemiBold
+		Value_Text.Text = DataParser(Config.Default)
+		Value_Text.TextColor3 = Color3.fromRGB(255, 255, 255)
+		Value_Text.TextSize = 10.000
+		Value_Text.TextTransparency = 0.500
+		Value_Text.TextXAlignment = Enum.TextXAlignment.Left
+		Value_Text.TextYAlignment = Enum.TextYAlignment.Top
+		Value_Text.TextWrapped = true
+		Value_Text.TextTruncate = Enum.TextTruncate.SplitWord
+
+		local res;
+		res = Sunset:CreateDropdown(ValueFrame,Config.Default,Config.Multi,Config.AutoUpdate,function(args)
+			Config.Default = args;
+			Value_Text.Text = DataParser(Config.Default);
+
+			res:change_default(Config.Default);
+
+			Config.Callback(args);
+		end);
+
+		res:set_data(Config.Values);
+		res:refresh();
+
+		res:on_toggle(function(b)
+			if b then
+				Sunset:CreateAnimation(icon,0.35,{
+					Rotation = -180,
+					ImageColor3 = Sunset.Colors.Main
+				})
+			else
+				Sunset:CreateAnimation(icon,0.35,{
+					Rotation = 0,
+					ImageColor3 = Color3.fromRGB(255, 255, 255)
+				})
+			end;
+		end);
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(Dropdown_Name,0.45,{
+					TextTransparency = 0.2,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 0
+				})
+
+				Sunset:CreateAnimation(icon,0.45,{
+					ImageTransparency = 0
+				})
+
+				Sunset:CreateAnimation(Value_Text,0.45,{
+					TextTransparency = 0.5
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = (Config.Option and 0.6) or 1,
+				})
+			else
+				Sunset:CreateAnimation(Dropdown_Name,0.45,{
+					TextTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(icon,0.45,{
+					ImageTransparency = 1
+				})
+
+				Sunset:CreateAnimation(Value_Text,0.45,{
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = 1
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'));
+
+		local Respons = Sunset:CreateResponse({
+			Rename = function(new_name)
+				Dropdown_Name.Text = new_name
+				Sunset:ProtectText(Dropdown_Name,new_name);
+			end,
+			GetValue = function()
+				return Config.Default;
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			SetValue = function(def)
+
+				Config.Default = def;
+				Value_Text.Text = DataParser(Config.Default);
+				res:change_default(Config.Default);
+
+				Config.Callback(def);
+			end,
+			SetData = function(def)
+				Config.Values = def;
+
+				res:set_data(Config.Values);
+
+				if not Config.AutoUpdate then
+					res:refresh();
+				end
+			end,
+			Flag = Config.Flag and Config.Flag.."Dropdown",
+			Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+		});
+
+		if Config.Flag then
+			Sunset.WindowFlags[FatalWindow][Config.Flag.."Dropdown"] = Respons;
+		end;
+
+		return Respons;
+	end;
+	
+	function elements:AddKeybind(Config: Keybind)
+		Config = Config or {};
+		Config.Name = Config.Name or "Keybind";
+		Config.Option = Config.Option or false;
+		Config.Default = Config.Default or nil;
+		Config.Callback = Config.Callback or function(any) end;
+
+		local Keys = {
+			One = '1',
+			Two = '2',
+			Three = '3',
+			Four = '4',
+			Five = '5',
+			Six = '6',
+			Seven = '7',
+			Eight = '8',
+			Nine = '9',
+			Zero = '0',
+			['Minus'] = "-",
+			['Plus'] = "+",
+			BackSlash = "\\",
+			Slash = "/",
+			Period = '.',
+			Semicolon = ';',
+			Colon = ":",
+			LeftControl = "LCtrl",
+			RightControl = "RCtrl",
+			LeftShift = "LShift",
+			RightShift = "RShift",
+			Return = "Enter",
+			LeftBracket = "[",
+			RightBracket = "]",
+			Quote = "'",
+			Comma = ",",
+			Equals = "=",
+			LeftSuper = "Super",
+			RightSuper = "Super"
+		};
+
+		local GetItem = function(item)
+			if item then
+				if typeof(item) == 'EnumItem' then
+					return Keys[item.Name] or item.Name;
+				else
+					return Keys[tostring(item)] or tostring(item);
+				end;
+			else
+				return 'None';
+			end;
+		end;
+
+		local Keybind = Instance.new("Frame")
+		local Keybind_Name = Instance.new("TextLabel")
+		local ValueFrame = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local OptionButton = Instance.new("ImageButton")
+		local ValueText = Instance.new("TextLabel")
+
+		if SearchAPI then
+			SearchAPI.Memory(Config.Name);
+		end;
+
+		Keybind.Name = Sunset:RandomString()
+		Keybind.Parent = Parent
+		Keybind.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Keybind.BackgroundTransparency = 1.000
+		Keybind.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Keybind.BorderSizePixel = 0
+		Keybind.Size = UDim2.new(1, -25, 0, 17)
+		Keybind.ZIndex = ZIndex + 1
+		Sunset:AddDragBlacklist(Keybind);
+
+		Keybind_Name.Name = Sunset:RandomString()
+		Keybind_Name.Parent = Keybind
+		Keybind_Name.AnchorPoint = Vector2.new(0, 0.5)
+		Keybind_Name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Keybind_Name.BackgroundTransparency = 1.000
+		Keybind_Name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Keybind_Name.BorderSizePixel = 0
+		Keybind_Name.Position = UDim2.new(0, 0, 0.5, 0)
+		Keybind_Name.Size = UDim2.new(1, 0, 0.800000012, 0)
+		Keybind_Name.ZIndex = ZIndex + 2
+		Keybind_Name.FontFace = Sunset.FontSemiBold
+		Keybind_Name.Text = Config.Name
+		Keybind_Name.TextColor3 = Color3.fromRGB(255, 255, 255)
+		Keybind_Name.TextSize = 13.000
+		Keybind_Name.TextTransparency = 0.200
+		Keybind_Name.TextXAlignment = Enum.TextXAlignment.Left
+		Sunset:ProtectText(Keybind_Name,Config.Name);
+
+		ValueFrame.Name = Sunset:RandomString()
+		ValueFrame.Parent = Keybind
+		ValueFrame.AnchorPoint = Vector2.new(1, 0.5)
+		ValueFrame.BackgroundColor3 = Sunset.Colors.Black
+		ValueFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueFrame.BorderSizePixel = 0
+		ValueFrame.Position = UDim2.new(1, -3, 0.5, 0)
+		ValueFrame.Size = UDim2.new(0, 75, 0.850000024, 0)
+		ValueFrame.ZIndex = ZIndex + 2
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = ValueFrame
+
+		OptionButton.Name = Sunset:RandomString()
+		OptionButton.Parent = ValueFrame
+		OptionButton.AnchorPoint = Vector2.new(0, 0.5)
+		OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		OptionButton.BackgroundTransparency = 1.000
+		OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		OptionButton.BorderSizePixel = 0
+		OptionButton.Position = UDim2.new(0, -20, 0.5, 0)
+		OptionButton.Size = UDim2.new(0, 13, 0, 13)
+		OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+		OptionButton.ImageTransparency = 0.600
+		OptionButton.Visible = Config.Option or false;
+
+		ValueText.Name = Sunset:RandomString()
+		ValueText.Parent = ValueFrame
+		ValueText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ValueText.BackgroundTransparency = 1.000
+		ValueText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ValueText.BorderSizePixel = 0
+		ValueText.Size = UDim2.new(1, 0, 1, 0)
+		ValueText.ZIndex = ZIndex + 3
+		ValueText.FontFace = Sunset.FontSemiBold
+		ValueText.Text = GetItem(Config.Default)
+		ValueText.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ValueText.TextSize = 9.000
+		ValueText.TextStrokeTransparency = 0.850
+		ValueText.TextTransparency = 0.400
+
+		local IsBinding = false;
+		Sunset:NewInput(ValueFrame,function()
+			if IsBinding then
+				return;
+			end;
+
+			ValueText.Text = "...";
+
+			local Selected = nil;
+			while not Selected do
+				local Key = UserInputService.InputBegan:Wait();
+
+				if Key.KeyCode ~= Enum.KeyCode.Unknown then
+					Selected = Key.KeyCode;
+				else
+					if Key.UserInputType == Enum.UserInputType.MouseButton1 then
+						Selected = "MouseLeft";
+					elseif Key.UserInputType == Enum.UserInputType.MouseButton2 then
+						Selected = "MouseRight";
+					end;
+				end;
+			end;
+
+			Config.Default = Selected;
+
+			ValueText.Text = GetItem(Selected);
+
+			IsBinding = false;
+
+			Config.Callback(typeof(Selected) == "string" and Selected or Selected.Name);
+		end);
+
+		local OpcToggle = function(value)
+			if value then
+				Sunset:CreateAnimation(Keybind_Name,0.45,{
+					TextTransparency = 0.2,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 0
+				})
+
+				Sunset:CreateAnimation(ValueText,0.45,{
+					TextStrokeTransparency = 0.850,
+					TextTransparency = 0.400
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = (Config.Option and 0.6) or 1,
+				})
+			else
+				Sunset:CreateAnimation(Keybind_Name,0.45,{
+					TextTransparency = 1,
+				})
+
+				Sunset:CreateAnimation(ValueFrame,0.45,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(ValueText,0.45,{
+					TextStrokeTransparency = 1,
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(OptionButton,0.45,{
+					ImageTransparency = 1,
+				})
+			end;
+		end;
+
+		OpcToggle(Event:GetAttribute('V'));
+
+		local Respons = Sunset:CreateResponse({
+			Rename = function(new_name)
+				Keybind_Name.Text = new_name
+				Sunset:ProtectText(Keybind_Name,new_name);
+			end,
+			GetValue = function()
+				return Config.Default;
+			end,
+			Signal = Event.Event:Connect(OpcToggle),
+			SetValue = function(def)
+				local IsSame = Config.Default == def;
+
+				Config.Default = def;
+				ValueText.Text = GetItem(Config.Default);
+
+				if not IsSame then
+					Config.Callback(Config.Default);
+				end;
+			end,
+			Flag = Config.Flag and Config.Flag.."Keybind",
+			Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+		});
+
+		if Config.Flag then
+
+			Sunset.WindowFlags[FatalWindow][Config.Flag.."Keybind"] = Respons;
+		end;
+
+		return Respons;
+	end;
+
+	return elements;
+end;
+
+function Sunset:CreateConfigWindow(Root: ScreenGui , Fatal , Button: ImageButton)
+
+	local ConfigWindowFrame = Instance.new("Frame")
+	local UICorner = Instance.new("UICorner")
+	local UIStroke = Instance.new("UIStroke")
+	local DropShadow = Instance.new("ImageLabel")
+	local ScrollingFrame = Instance.new("ScrollingFrame")
+	local UICorner_2 = Instance.new("UICorner")
+	local UIStroke_2 = Instance.new("UIStroke")
+	local UIListLayout = Instance.new("UIListLayout")
+	local SpaceBox = Instance.new("Frame")
+	local InputFrame = Instance.new("Frame")
+	local UIStroke_3 = Instance.new("UIStroke")
+	local UICorner_3 = Instance.new("UICorner")
+	local TextBox = Instance.new("TextBox")
+	local AddConfigButton = Instance.new("ImageButton")
+	local UICorner_4 = Instance.new("UICorner")
+	local GetConfigButton = Instance.new("ImageButton")
+	local UICorner_5 = Instance.new("UICorner")
+	local SaveConfigButton = Instance.new("ImageButton")
+	local UICorner_6 = Instance.new("UICorner")
+	local DeleteButton = Instance.new("ImageButton")
+	local UICorner_7 = Instance.new("UICorner")
+
+	Sunset:ScrollSignal(ScrollingFrame,UIListLayout,"Y");
+
+	Sunset:AddDragBlacklist(ConfigWindowFrame);
+
+	local UIToggle = false;
+	local ElementToggle = function(value)
+		UIToggle = value;
+
+		if value then
+			ConfigWindowFrame.Position = UDim2.fromOffset(Button.AbsolutePosition.X,Button.AbsolutePosition.Y + (Button.AbsoluteSize.Y * 3));
+
+			Sunset:CreateAnimation(ConfigWindowFrame,0.3,{
+				Size = UDim2.new(0, 185, 0, 195),
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.3,{
+				Transparency = 0
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.3,{
+				ImageTransparency = 0.750
+			})
+
+			Sunset:CreateAnimation(ScrollingFrame,0.3,{
+				BackgroundTransparency = 0
+			})
+
+			Sunset:CreateAnimation(UIStroke_2,0.3,{
+				Transparency = 0.750
+			})
+
+			Sunset:CreateAnimation(UIStroke_3,0.3,{
+				Transparency = 0.750
+			})
+
+			Sunset:CreateAnimation(SpaceBox,0.3,{
+				BackgroundTransparency = 0
+			})
+
+			Sunset:CreateAnimation(InputFrame,0.3,{
+				BackgroundTransparency = 0
+			})
+
+			Sunset:CreateAnimation(TextBox,0.3,{
+				TextTransparency = 0.5
+			})
+
+			Sunset:CreateAnimation(AddConfigButton,0.3,{
+				ImageTransparency = 0.500
+			})
+
+			Sunset:CreateAnimation(GetConfigButton,0.3,{
+				ImageTransparency = 0.500
+			})
+
+			Sunset:CreateAnimation(SaveConfigButton,0.3,{
+				ImageTransparency = 0.500
+			})
+
+			Sunset:CreateAnimation(DeleteButton,0.3,{
+				ImageTransparency = 0.2500
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.3,{
+				ImageTransparency = 0.75
+			})
+		else
+			Sunset:CreateAnimation(DropShadow,0.3,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(ConfigWindowFrame,0.275,{
+				Size = UDim2.new(0, 185, 0, 0),
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.3,{
+				Transparency = 1
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.3,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(ScrollingFrame,0.3,{
+				BackgroundTransparency = 1
+			})
+
+			Sunset:CreateAnimation(UIStroke_2,0.3,{
+				Transparency = 1
+			})
+
+			Sunset:CreateAnimation(UIStroke_3,0.3,{
+				Transparency = 1
+			})
+
+			Sunset:CreateAnimation(SpaceBox,0.3,{
+				BackgroundTransparency = 1
+			})
+
+			Sunset:CreateAnimation(InputFrame,0.3,{
+				BackgroundTransparency = 1
+			})
+
+			Sunset:CreateAnimation(TextBox,0.3,{
+				TextTransparency = 1
+			})
+
+			Sunset:CreateAnimation(AddConfigButton,0.3,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(GetConfigButton,0.3,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(SaveConfigButton,0.3,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(DeleteButton,0.3,{
+				ImageTransparency = 1
+			})
+		end;
+	end;
+
+	ElementToggle(false);
+
+	ConfigWindowFrame.Name = "ConfigWindowFrame"
+	ConfigWindowFrame.Parent = Root
+	ConfigWindowFrame.AnchorPoint = Vector2.new(0,1)
+	ConfigWindowFrame.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+	ConfigWindowFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ConfigWindowFrame.BorderSizePixel = 0
+	ConfigWindowFrame.ClipsDescendants = true
+	ConfigWindowFrame.Position = UDim2.new(2,0,2,0)
+	ConfigWindowFrame.Size = UDim2.new(0, 185, 0, 0)
+	ConfigWindowFrame.ZIndex = 205
+
+	UICorner.CornerRadius = UDim.new(0, 2)
+	UICorner.Parent = ConfigWindowFrame
+
+	UIStroke.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke.Parent = ConfigWindowFrame
+
+	DropShadow.Name = "DropShadow"
+	DropShadow.Parent = ConfigWindowFrame
+	DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	DropShadow.BackgroundTransparency = 1.000
+	DropShadow.BorderSizePixel = 0
+	DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+	DropShadow.Rotation = 0.001
+	DropShadow.Size = UDim2.new(1, 47, 1, 47)
+	DropShadow.ZIndex = 205
+	DropShadow.Image = "rbxassetid://6014261993"
+	DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+	DropShadow.ImageTransparency = 0.750
+	DropShadow.ScaleType = Enum.ScaleType.Slice
+	DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+
+	ScrollingFrame.Parent = ConfigWindowFrame
+	ScrollingFrame.Active = true
+	ScrollingFrame.BackgroundColor3 = Sunset.Colors.Black
+	ScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	ScrollingFrame.BorderSizePixel = 0
+	ScrollingFrame.Position = UDim2.new(0, 8, 0, 8)
+	ScrollingFrame.Size = UDim2.new(1, -40, 1, -45)
+	ScrollingFrame.ZIndex = 207
+	ScrollingFrame.ScrollBarThickness = 0
+
+	UICorner_2.CornerRadius = UDim.new(0, 3)
+	UICorner_2.Parent = ScrollingFrame
+
+	UIStroke_2.Transparency = 0.750
+	UIStroke_2.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_2.Parent = ScrollingFrame
+
+	UIListLayout.Parent = ScrollingFrame
+	UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	UIListLayout.Padding = UDim.new(0, 5)
+
+	SpaceBox.Name = "SpaceBox"
+	SpaceBox.Parent = ScrollingFrame
+	SpaceBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	SpaceBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	SpaceBox.BorderSizePixel = 0
+	SpaceBox.Size = UDim2.new(0, 0, 0, 1)
+
+	InputFrame.Name = "InputFrame"
+	InputFrame.Parent = ConfigWindowFrame
+	InputFrame.AnchorPoint = Vector2.new(0, 1)
+	InputFrame.BackgroundColor3 = Sunset.Colors.Black
+	InputFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	InputFrame.BorderSizePixel = 0
+	InputFrame.Position = UDim2.new(0, 8, 1, -9)
+	InputFrame.Size = UDim2.new(1, -40, 0, 22)
+	InputFrame.ZIndex = 208
+
+	UIStroke_3.Transparency = 0.750
+	UIStroke_3.Color = Color3.fromRGB(29, 29, 29)
+	UIStroke_3.Parent = InputFrame
+
+	UICorner_3.CornerRadius = UDim.new(0, 3)
+	UICorner_3.Parent = InputFrame
+
+	TextBox.Parent = InputFrame
+	TextBox.AnchorPoint = Vector2.new(0.5, 0.5)
+	TextBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	TextBox.BackgroundTransparency = 1.000
+	TextBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	TextBox.BorderSizePixel = 0
+	TextBox.Position = UDim2.new(0.5, 0, 0.5, 0)
+	TextBox.Size = UDim2.new(1, -10, 1, -1)
+	TextBox.ZIndex = 209
+	TextBox.FontFace = Sunset.FontSemiBold
+	TextBox.Text = ""
+	TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+	TextBox.TextSize = 10.000
+	TextBox.TextTransparency = 0.500
+	TextBox.TextXAlignment = Enum.TextXAlignment.Left
+
+	AddConfigButton.Name = "AddConfigButton"
+	AddConfigButton.Parent = InputFrame
+	AddConfigButton.AnchorPoint = Vector2.new(0, 0.5)
+	AddConfigButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	AddConfigButton.BackgroundTransparency = 1.000
+	AddConfigButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	AddConfigButton.BorderSizePixel = 0
+	AddConfigButton.Position = UDim2.new(1, 8, 0.5, 0)
+	AddConfigButton.Size = UDim2.new(0, 15, 0, 15)
+	AddConfigButton.ZIndex = 209
+	AddConfigButton.Image = "rbxassetid://10734923868"
+	AddConfigButton.ImageTransparency = 0.500
+
+	UICorner_4.CornerRadius = UDim.new(1, 0)
+	UICorner_4.Parent = AddConfigButton
+
+	GetConfigButton.Name = "GetConfigButton"
+	GetConfigButton.Parent = ConfigWindowFrame
+	GetConfigButton.AnchorPoint = Vector2.new(1, 0)
+	GetConfigButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	GetConfigButton.BackgroundTransparency = 1.000
+	GetConfigButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	GetConfigButton.BorderSizePixel = 0
+	GetConfigButton.Position = UDim2.new(1, -8, 0, 10)
+	GetConfigButton.Size = UDim2.new(0, 15, 0, 15)
+	GetConfigButton.ZIndex = 209
+	GetConfigButton.Image = "rbxassetid://10723387265"
+	GetConfigButton.ImageTransparency = 0.500
+
+	UICorner_5.CornerRadius = UDim.new(1, 0)
+	UICorner_5.Parent = GetConfigButton
+
+	SaveConfigButton.Name = "SaveConfigButton"
+	SaveConfigButton.Parent = ConfigWindowFrame
+	SaveConfigButton.AnchorPoint = Vector2.new(1, 0)
+	SaveConfigButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	SaveConfigButton.BackgroundTransparency = 1.000
+	SaveConfigButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	SaveConfigButton.BorderSizePixel = 0
+	SaveConfigButton.Position = UDim2.new(1, -8, 0, 28)
+	SaveConfigButton.Size = UDim2.new(0, 15, 0, 15)
+	SaveConfigButton.ZIndex = 209
+	SaveConfigButton.Image = "rbxassetid://10734941499"
+	SaveConfigButton.ImageTransparency = 0.500
+
+	UICorner_6.CornerRadius = UDim.new(1, 0)
+	UICorner_6.Parent = SaveConfigButton
+
+	DeleteButton.Name = "DeleteButton"
+	DeleteButton.Parent = ConfigWindowFrame
+	DeleteButton.AnchorPoint = Vector2.new(1, 0)
+	DeleteButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	DeleteButton.BackgroundTransparency = 1.000
+	DeleteButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	DeleteButton.BorderSizePixel = 0
+	DeleteButton.Position = UDim2.new(1, -8, 0, 55)
+	DeleteButton.Size = UDim2.new(0, 15, 0, 15)
+	DeleteButton.ZIndex = 209
+	DeleteButton.Image = "rbxassetid://10747362393"
+	DeleteButton.ImageColor3 = Sunset.Colors.Main
+	DeleteButton.ImageTransparency = 0.250
+
+	UICorner_7.CornerRadius = UDim.new(1, 0)
+	UICorner_7.Parent = DeleteButton
+
+	Button.MouseButton1Click:Connect(function()
+		ElementToggle(true);
+	end);
+
+	Sunset:CreateHover(DeleteButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(DeleteButton,0.3,{
+				ImageTransparency = 0;
+			})
+		else
+			Sunset:CreateAnimation(DeleteButton,0.3,{
+				ImageTransparency = 0.35;
+			})
+		end;
+	end);
+
+	Sunset:CreateHover(SaveConfigButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(SaveConfigButton,0.3,{
+				ImageTransparency = 0.15;
+			})
+		else
+			Sunset:CreateAnimation(SaveConfigButton,0.3,{
+				ImageTransparency = 0.500;
+			})
+		end;
+	end);
+
+	Sunset:CreateHover(GetConfigButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(GetConfigButton,0.3,{
+				ImageTransparency = 0.15;
+			})
+		else
+			Sunset:CreateAnimation(GetConfigButton,0.3,{
+				ImageTransparency = 0.500;
+			})
+		end;
+	end);
+
+	Sunset:CreateHover(AddConfigButton,function(bool)
+		if bool then
+			Sunset:CreateAnimation(AddConfigButton,0.3,{
+				ImageTransparency = 0.15;
+			})
+		else
+			Sunset:CreateAnimation(AddConfigButton,0.3,{
+				ImageTransparency = 0.500;
+			})
+		end;
+	end);
+
+	game:GetService('UserInputService').InputBegan:Connect(function(Input,Typing)
+		if Input.UserInputType == Enum.UserInputType.Touch or Input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if UIToggle and not Sunset:IsMouseOverFrame(ConfigWindowFrame) then
+				ElementToggle(false);
+			end;
+		end;
+	end);
+
+	local new_button = function()
+		local db_selected = Instance.new("TextButton")
+
+		db_selected.Name = Sunset:RandomString()
+		db_selected.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		db_selected.BackgroundTransparency = 1.000
+		db_selected.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		db_selected.BorderSizePixel = 0
+		db_selected.Size = UDim2.new(1, 0, 0, 10)
+		db_selected.ZIndex = 220
+		db_selected.FontFace = Sunset.FontSemiBold
+		db_selected.TextColor3 = Color3.fromRGB(150, 150, 150)
+		db_selected.TextSize = 12.000
+		db_selected.TextXAlignment = Enum.TextXAlignment.Left
+
+		return db_selected;
+	end;
+
+	local Configs = {};
+	local import = {
+		Name = nil,
+		Element = nil;
+	};
+
+	local res;
+	res = Sunset:CreateResponse({
+		SetFiles = function(configs,bypass)
+			local OldLen = #Configs;
+
+			Configs = configs;
+
+			if OldLen ~= #configs and not bypass then
+				res:ReloadConfig();
+			end;
+		end,
+
+		Refresh = function()
+			for i,v in next , ScrollingFrame:GetChildren() do
+				if v:IsA('TextButton') then
+					v:Destroy();
+				end;
+			end;
+
+			for i,v in next, Configs do
+				local button = new_button();
+
+				button.Parent = ScrollingFrame;
+				button.Text = " "..tostring(v);
+
+				if tostring(import.Name) == tostring(v) or import.Name == v then
+					import.Element = button;
+					import.Name = v;
+					import.Element.TextColor3 = Sunset.Colors.Main;
+					button.Text = "  "..tostring(v);
+				end;
+
+				button.MouseButton1Click:Connect(function()
+					if import.Element then
+						import.Element.TextColor3 = Color3.fromRGB(150, 150, 150);
+						import.Element.Text = " "..import.Name;
+					end;
+
+					import.Element = button;
+					import.Name = v;
+					button.TextColor3 = Sunset.Colors.Main;
+					button.Text = "  "..tostring(v);
+				end);
+			end;
+		end,
+
+		ReloadConfig = function()
+			assert(res.ConfigDirectory , "Config directory not found");
+
+			local files = {};
+
+			for i,v in next , listfiles(res.ConfigDirectory) do
+				local spl = (string.find(v,'/',1,true) and string.split(v,'/')) or (string.find(v,'\\',1,true) and string.split(v,'\\'));
+				local name = spl[#spl];
+
+				table.insert(files,name);
+			end;
+
+			res:SetFiles(files,true);
+			res:Refresh();
+		end,
+
+		DeleteConfig = function(name)
+			assert(res.ConfigDirectory , "Config directory not found");
+
+			local path = res.ConfigDirectory..'/'..tostring(name);
+
+			if isfile(path) then
+				delfile(path)
+			end;
+		end,
+
+		SaveConfig = function(name,content)
+			if string.find(name,'/',1,true) or string.find(name,'\\',1,true) or string.find(name,':',1,true) then
+				return;	
+			end;
+
+			assert(res.ConfigDirectory , "Config directory not found");
+
+			local path = res.ConfigDirectory..'/'..tostring(name);
+
+			writefile(path , content);
+		end,
+
+		LoadConfig = function(name)
+
+			assert(res.ConfigDirectory , "Config directory not found");
+
+			local path = res.ConfigDirectory..'/'..tostring(name);
+
+			if isfile(path) then
+				local decoded = game:GetService('HttpService'):JSONDecode(readfile(path));
+
+				Fatal.Notifier:Notify({
+					Title = "Config",
+					Content = "Loaded config '"..tostring(name).."'",
+					Icon = "settings",
+					Duration = 4,
+				});
+
+				Fatal:LoadConfig(decoded);
+			end;
+		end,
+
+		Init = function(Name: string,Folder: string)
+			if not isfolder(Folder or "Sunset") then
+				makefolder(Folder or "Sunset");	
+			end;
+
+			if not isfolder((Folder or "Sunset").."/Config") then
+				makefolder((Folder or "Sunset").."/Config");	
+			end;
+
+			local cfgPath = (Folder or "Sunset").."/Config/"..tostring(Name);
+
+			if not isfolder(cfgPath) then
+				makefolder(cfgPath)
+			end;
+
+			res.ConfigDirectory = cfgPath;
+
+			AddConfigButton.MouseButton1Click:Connect(function()
+				local configName = TextBox.Text;
+
+				if not configName:byte() then return end;
+
+				local flags = Fatal:GetFlagConfig();
+
+				flags.Info = {
+					Name = Name,
+					Folder = Folder,
+					ConfigName = configName,
+				};
+
+				local code = game:GetService('HttpService'):JSONEncode(flags);
+
+				res:SaveConfig(configName , code);
+				res:ReloadConfig();
+
+				Fatal.Notifier:Notify({
+					Title = "Config",
+					Content = "Saved config '"..tostring(configName).."'",
+					Icon = "settings",
+					Duration = 4,
+				});
+
+				TextBox.Text = "";
+			end);
+
+			GetConfigButton.MouseButton1Click:Connect(function()
+				if import and import.Name then
+					res:LoadConfig(import.Name);
+				end;
+			end);
+
+			SaveConfigButton.MouseButton1Click:Connect(function()
+				if import and import.Name then
+					local flags = Fatal:GetFlagConfig();
+					local configName = import.Name;
+
+					flags.Info = {
+						Name = Name,
+						Folder = Folder,
+						ConfigName = configName,
+						Type = "Overwrite"
+					};
+
+					Fatal.Notifier:Notify({
+						Title = "Config",
+						Content = "Saved config '"..tostring(configName).."'",
+						Icon = "settings",
+						Duration = 4,
+					});
+
+					local code = game:GetService('HttpService'):JSONEncode(flags);
+
+					res:SaveConfig(configName , code);
+					res:ReloadConfig();
+				end;
+			end);
+
+			DeleteButton.MouseButton1Click:Connect(function()
+				if import and import.Name then
+
+					Fatal.Notifier:Notify({
+						Title = "Config",
+						Content = "Deleted config '"..tostring(import.Name).."'",
+						Icon = "settings",
+						Duration = 4,
+					});
+
+					res:DeleteConfig(import.Name);
+					res:ReloadConfig();
+				end;
+			end)
+		end,
+	});
+
+	return res;
+end;
+
+function Sunset.new(Window: Window)
+	Window = Window or {};
+	Window.Name = Window.Name or "SUNSET";
+	Window.Scale = Window.Scale or UDim2.new(0, 750, 0, 500);
+	Window.Keybind = Window.Keybind or "Insert";
+	Window.Expire = Window.Expire or "never";
+
+	local Fatal = {
+		Menus = {},
+		ElementContents = {},
+		MenuSelected = nil,
+		Toggle = true,
+		Signal = Instance.new('BindableEvent');
+	};
+
+	Fatal.Notifier = Sunset.__NOTIFIER_CACHE or Sunset:CreateNotifier();
+
+	local Sunsetwin = Instance.new("ScreenGui")
+	local FatalFrame = Instance.new("Frame")
+	local UICorner = Instance.new("UICorner")
+	local DropShadow = Instance.new("ImageLabel")
+	local Header = Instance.new("Frame")
+	local HeaderLine = Instance.new("Frame")
+	local UICorner_2 = Instance.new("UICorner")
+	local HeaderText = Instance.new("TextLabel")
+	local MenuButtonCont = Instance.new("Frame")
+	local tbc = Instance.new("ScrollingFrame")
+	local UIListLayout = Instance.new("UIListLayout")
+	local UserProfle = Instance.new("Frame")
+	local UserIcon = Instance.new("ImageLabel")
+	local UICorner_3 = Instance.new("UICorner")
+	local UIStroke = Instance.new("UIStroke")
+	local User_name = Instance.new("TextLabel")
+	local expire_days = Instance.new("TextLabel")
+	local HeaderLineShadow = Instance.new("Frame")
+	local UIGradient = Instance.new("UIGradient")
+	local UICorner_4 = Instance.new("UICorner")
+	local MenuFrame = Instance.new("Frame")
+	local Bottom = Instance.new("Frame")
+	local HeaderLine_2 = Instance.new("Frame")
+	local UICorner_5 = Instance.new("UICorner")
+	local HeaderLineShadow_2 = Instance.new("Frame")
+	local UIGradient_2 = Instance.new("UIGradient")
+	local UICorner_6 = Instance.new("UICorner")
+	local InfoButton = Instance.new("ImageButton")
+	local SearchButton = Instance.new("ImageButton")
+	local SaveButton = Instance.new("ImageButton")
+
+	Sunset.WindowFlags[Sunsetwin] = {};
+
+	Sunset:ScrollSignal(tbc,UIListLayout,'X');
+
+	FatalFrame:GetPropertyChangedSignal("BackgroundTransparency"):Connect(function()
+		if FatalFrame.BackgroundTransparency >= 0.99 then
+			Sunsetwin.Enabled = false;
+		else
+			Sunsetwin.Enabled = true;
+		end;
+	end);
+
+	local ToggleUI = function(bool)
+		Fatal.Signal:Fire(bool);
+
+		if bool then
+			for i,v in next , Fatal.Menus do
+				v.ValueSelect(false);
+			end;
+
+			if Fatal.MenuSelected then
+				Fatal.MenuSelected.ValueSelect(true)
+			end
+
+			Sunset:CreateAnimation(FatalFrame,0.15,{
+				Size = Window.Scale,
+				BackgroundTransparency = 0,
+			})
+
+			Sunset:CreateAnimation(Header,0.5,{
+				BackgroundTransparency = 0,
+			})
+
+			Sunset:CreateAnimation(HeaderLine,0.5,{
+				BackgroundTransparency = 0,
+			})
+
+			Sunset:CreateAnimation(Bottom,0.5,{
+				BackgroundTransparency = 0,
+			})
+
+			Sunset:CreateAnimation(HeaderLine_2,0.5,{
+				BackgroundTransparency = 0,
+			})
+
+			Sunset:CreateAnimation(HeaderLineShadow,0.5,{
+				BackgroundTransparency = 0.5,
+			})
+
+			Sunset:CreateAnimation(HeaderLineShadow_2,0.5,{
+				BackgroundTransparency = 0.5,
+			})
+
+			Sunset:CreateAnimation(InfoButton,0.25,{
+				ImageTransparency = 0.5
+			})
+
+			Sunset:CreateAnimation(SearchButton,0.25,{
+				ImageTransparency = 0.5
+			})
+
+			Sunset:CreateAnimation(SaveButton,0.25,{
+				ImageTransparency = 0.5
+			})
+
+			Sunset:CreateAnimation(HeaderText,0.35,{
+				TextStrokeTransparency = 0.640,
+				TextTransparency = 0
+			})
+
+			Sunset:CreateAnimation(UserIcon,0.45,{
+				ImageTransparency = 0,
+				Position = UDim2.new(1, -10,0.5, 0)
+			})
+
+			Sunset:CreateAnimation(User_name,0.35,{
+				TextTransparency = 0,
+				Position = UDim2.new(1, -40,0, 3)
+			})
+
+			Sunset:CreateAnimation(expire_days,0.5,{
+				TextTransparency = 0,
+				Position = UDim2.new(1, -40,0, 16)
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.35,{
+				Thickness = 2.500,
+				Transparency = 0.900
+			})
+
+			Sunset:CreateAnimation(InfoButton,0.1,Enum.EasingStyle.Back,{
+				Position = UDim2.new(1, -5,0.5, 0)
+			})
+
+			Sunset:CreateAnimation(SearchButton,0.1,Enum.EasingStyle.Back,{
+				Position = UDim2.new(0,10,0.5, 0)
+			})
+
+			Sunset:CreateAnimation(SaveButton,0.1,Enum.EasingStyle.Back,{
+				Position = UDim2.new(0,35,0.5, 0)
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.35,{
+				ImageTransparency = 0.75
+			})
+		else
+			table.clear(Sunset.DragBlacklist);
+
+			for i,v in next , Fatal.Menus do
+				v.ValueSelect(false);
+			end;
+
+			Sunset:CreateAnimation(SaveButton,0.35,{
+				Position = UDim2.new(0,35,1, 20)
+			})
+
+			Sunset:CreateAnimation(SearchButton,0.35,{
+				Position = UDim2.new(0,10,1, 20)
+			})
+
+			Sunset:CreateAnimation(InfoButton,0.35,{
+				Position = UDim2.new(1, -5,1, 20)
+			})
+
+			Sunset:CreateAnimation(UIStroke,0.35,{
+				Thickness = 0,
+				Transparency = 1
+			})
+
+			Sunset:CreateAnimation(UserIcon,0.35,{
+				ImageTransparency = 1,
+				Position = UDim2.new(1, -10,0.5, 0)
+			})
+
+			Sunset:CreateAnimation(User_name,0.35,{
+				TextTransparency = 1,
+				Position = UDim2.new(1, -40,0, 3)
+			})
+
+			Sunset:CreateAnimation(expire_days,0.1,{
+				TextTransparency = 1,
+				Position = UDim2.new(1, -40,0, 16)
+			})
+
+			Sunset:CreateAnimation(HeaderText,0.35,{
+				TextStrokeTransparency = 1,
+				TextTransparency = 1
+			})
+
+			Sunset:CreateAnimation(HeaderLineShadow_2,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(InfoButton,0.35,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(SearchButton,0.35,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(SaveButton,0.35,{
+				ImageTransparency = 1
+			})
+
+			Sunset:CreateAnimation(HeaderLineShadow,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(FatalFrame,0.75,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(Header,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(HeaderLine,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(Bottom,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(HeaderLine_2,0.5,{
+				BackgroundTransparency = 1,
+			})
+
+			Sunset:CreateAnimation(DropShadow,0.35,{
+				ImageTransparency = 1
+			})
+		end
+	end
+
+	Sunsetwin.Name = Sunset:RandomString();
+	Sunsetwin.Parent = CoreGui;
+	Sunsetwin.ResetOnSpawn = false;
+	Sunsetwin.IgnoreGuiInset = true;
+	Sunsetwin.ZIndexBehavior = Enum.ZIndexBehavior.Global;
+
+	table.insert(Sunset.Windows,Sunsetwin)
+
+	protect_gui(Sunsetwin);
+
+	FatalFrame.Active = true;
+	FatalFrame.Name = Sunset:RandomString()
+	FatalFrame.Parent = Sunsetwin
+	FatalFrame.AnchorPoint = Vector2.new(0.5, 0)
+	FatalFrame.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+	FatalFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	FatalFrame.BorderSizePixel = 0
+	FatalFrame.Position = UDim2.new(0.5, 0, 0.2);
+	FatalFrame.Size = Window.Scale;
+	FatalFrame.ClipsDescendants = true
+
+	UICorner.CornerRadius = UDim.new(0, 5)
+	UICorner.Parent = FatalFrame
+
+	DropShadow.Name = Sunset:RandomString()
+	DropShadow.Parent = FatalFrame
+	DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+	DropShadow.BackgroundTransparency = 1.000
+	DropShadow.BorderSizePixel = 0
+	DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+	DropShadow.Size = UDim2.new(1, 47, 1, 47)
+	DropShadow.ZIndex = -1
+	DropShadow.Image = "rbxassetid://6014261993"
+	DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+	DropShadow.ImageTransparency = 1
+	DropShadow.ScaleType = Enum.ScaleType.Slice
+	DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+	DropShadow.Rotation = 0.001
+
+	Header.Name = Sunset:RandomString()
+	Header.Parent = FatalFrame
+	Header.Active = true
+	Header.BackgroundColor3 = Color3.fromRGB(21, 21, 21)
+	Header.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	Header.BorderSizePixel = 0
+	Header.Size = UDim2.new(1, 0, 0, 40)
+	Header.ZIndex = 2
+
+	HeaderLine.Name = Sunset:RandomString()
+	HeaderLine.Parent = Header
+	HeaderLine.AnchorPoint = Vector2.new(0, 1)
+	HeaderLine.BackgroundColor3 = Color3.fromRGB(29, 29, 29)
+	HeaderLine.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLine.BorderSizePixel = 0
+	HeaderLine.Position = UDim2.new(0, 0, 1, 0)
+	HeaderLine.Size = UDim2.new(1, 0, 0, 1)
+	HeaderLine.ZIndex = 3
+
+	UICorner_2.CornerRadius = UDim.new(0, 5)
+	UICorner_2.Parent = Header
+
+	HeaderText.Name = Sunset:RandomString()
+	HeaderText.Parent = Header
+	HeaderText.AnchorPoint = Vector2.new(0, 0.5)
+	HeaderText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	HeaderText.BackgroundTransparency = 1.000
+	HeaderText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderText.BorderSizePixel = 0
+	HeaderText.Position = UDim2.new(0, 5, 0.5, 0)
+	HeaderText.Size = UDim2.new(0, 100, 0.699999988, 0)
+	HeaderText.ZIndex = 4
+	HeaderText.Font = Enum.Font.GothamBold
+	HeaderText.Text = Window.Name
+	HeaderText.TextColor3 = Color3.fromRGB(229, 229, 229)
+	HeaderText.TextSize = 21.000
+	HeaderText.TextStrokeColor3 = Color3.fromRGB(205, 67, 218)
+	HeaderText.TextStrokeTransparency = 0.640
+
+	MenuButtonCont.Name = Sunset:RandomString()
+	MenuButtonCont.Parent = Header
+	MenuButtonCont.AnchorPoint = Vector2.new(0, 0.5)
+	MenuButtonCont.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	MenuButtonCont.BackgroundTransparency = 1.000
+	MenuButtonCont.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	MenuButtonCont.BorderSizePixel = 0
+	MenuButtonCont.ClipsDescendants = true
+	MenuButtonCont.Position = UDim2.new(0, 115, 0.5, 0)
+	MenuButtonCont.Size = UDim2.new(1, -275, 0.75, 0)
+	MenuButtonCont.ZIndex = 4
+
+	tbc.Name = Sunset:RandomString()
+	tbc.Parent = MenuButtonCont
+	tbc.Active = true
+	tbc.AnchorPoint = Vector2.new(0.5, 0.5)
+	tbc.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	tbc.BackgroundTransparency = 1.000
+	tbc.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	tbc.BorderSizePixel = 0
+	tbc.ClipsDescendants = false
+	tbc.Position = UDim2.new(0.5, 0, 0.5, 0)
+	tbc.Size = UDim2.new(1, -2, 1, 0)
+	tbc.ZIndex = 4
+	tbc.CanvasSize = UDim2.new(2, 0, 0, 0)
+	tbc.ScrollBarThickness = 0
+
+	UIListLayout.Parent = tbc
+	UIListLayout.FillDirection = Enum.FillDirection.Horizontal
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	UIListLayout.Padding = UDim.new(0, 4)
+
+	UserProfle.Name = Sunset:RandomString()
+	UserProfle.Parent = Header
+	UserProfle.AnchorPoint = Vector2.new(1, 0.5)
+	UserProfle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	UserProfle.BackgroundTransparency = 1.000
+	UserProfle.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	UserProfle.BorderSizePixel = 0
+	UserProfle.Position = UDim2.new(1, -5, 0.5, 0)
+	UserProfle.Size = UDim2.new(0, 150, 0.75, 0)
+	UserProfle.ZIndex = 4
+
+	UserIcon.Name = Sunset:RandomString()
+	UserIcon.Parent = UserProfle
+	UserIcon.AnchorPoint = Vector2.new(1, 0.5)
+	UserIcon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	UserIcon.BackgroundTransparency = 1.000
+	UserIcon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	UserIcon.BorderSizePixel = 0
+	UserIcon.Position = UDim2.new(1, -10, 0.5, 0)
+	UserIcon.Size = UDim2.new(0.800000012, 0, 0.800000012, 0)
+	UserIcon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+	UserIcon.ZIndex = 5
+	UserIcon.Image = Players:GetUserThumbnailAsync(Client.UserId,Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size180x180);
+
+	UICorner_3.CornerRadius = UDim.new(1, 0)
+	UICorner_3.Parent = UserIcon
+
+	UIStroke.Thickness = 2.500
+	UIStroke.Transparency = 0.900
+	UIStroke.Parent = UserIcon
+
+	User_name.Name = Sunset:RandomString()
+	User_name.Parent = UserProfle
+	User_name.AnchorPoint = Vector2.new(1, 0)
+	User_name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	User_name.BackgroundTransparency = 1.000
+	User_name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	User_name.BorderSizePixel = 0
+	User_name.Position = UDim2.new(1, -40, 0, 3)
+	User_name.Size = UDim2.new(0, 200, 0, 15)
+	User_name.ZIndex = 4
+	User_name.Font = Enum.Font.GothamMedium
+	User_name.Text = Client.DisplayName;
+	User_name.TextColor3 = Color3.fromRGB(255, 255, 255)
+	User_name.TextSize = 13.000
+	User_name.TextStrokeTransparency = 0.700
+	User_name.TextXAlignment = Enum.TextXAlignment.Right
+
+	expire_days.Name = Sunset:RandomString()
+	expire_days.Parent = UserProfle
+	expire_days.AnchorPoint = Vector2.new(1, 0)
+	expire_days.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	expire_days.BackgroundTransparency = 1.000
+	expire_days.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	expire_days.BorderSizePixel = 0
+	expire_days.Position = UDim2.new(1, -40, 0, 16)
+	expire_days.Size = UDim2.new(0, 200, 0, 15)
+	expire_days.ZIndex = 4
+	expire_days.Font = Enum.Font.GothamMedium
+	expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>",Window.Expire)
+	expire_days.TextColor3 = Color3.fromRGB(255, 255, 255)
+	expire_days.TextSize = 12.000
+	expire_days.TextStrokeTransparency = 0.700
+	expire_days.TextXAlignment = Enum.TextXAlignment.Right
+	expire_days.RichText = true;
+
+	HeaderLineShadow.Name = Sunset:RandomString()
+	HeaderLineShadow.Parent = Header
+	HeaderLineShadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLineShadow.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLineShadow.BorderSizePixel = 0
+	HeaderLineShadow.Size = UDim2.new(1, 0, 1, 10)
+
+	UIGradient.Rotation = 90
+	UIGradient.Transparency = NumberSequence.new{NumberSequenceKeypoint.new(0.00, 0.00), NumberSequenceKeypoint.new(1.00, 1.00)}
+	UIGradient.Parent = HeaderLineShadow
+
+	UICorner_4.CornerRadius = UDim.new(0, 5)
+	UICorner_4.Parent = HeaderLineShadow
+
+	MenuFrame.Name = Sunset:RandomString()
+	MenuFrame.Parent = FatalFrame
+	MenuFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	MenuFrame.BackgroundTransparency = 1.000
+	MenuFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	MenuFrame.BorderSizePixel = 0
+	MenuFrame.Position = UDim2.new(0, 0, 0, 50)
+	MenuFrame.Size = UDim2.new(1, 0, 1, -82)
+
+	Bottom.Name = Sunset:RandomString()
+	Bottom.Parent = FatalFrame
+	Bottom.Active = true
+	Bottom.AnchorPoint = Vector2.new(0, 1)
+	Bottom.BackgroundColor3 = Color3.fromRGB(21, 21, 21)
+	Bottom.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	Bottom.BorderSizePixel = 0
+	Bottom.Position = UDim2.new(0, 0, 1, 0)
+	Bottom.Size = UDim2.new(1, 0, 0, 25)
+	Bottom.ZIndex = 2
+
+	HeaderLine_2.Name = Sunset:RandomString()
+	HeaderLine_2.Parent = Bottom
+	HeaderLine_2.BackgroundColor3 = Color3.fromRGB(29, 29, 29)
+	HeaderLine_2.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLine_2.BorderSizePixel = 0
+	HeaderLine_2.Size = UDim2.new(1, 0, 0, 1)
+	HeaderLine_2.ZIndex = 3
+
+	UICorner_5.CornerRadius = UDim.new(0, 4)
+	UICorner_5.Parent = Bottom
+
+	HeaderLineShadow_2.Name = Sunset:RandomString()
+	HeaderLineShadow_2.Parent = Bottom
+	HeaderLineShadow_2.AnchorPoint = Vector2.new(0, 1)
+	HeaderLineShadow_2.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLineShadow_2.BackgroundTransparency = 0.500
+	HeaderLineShadow_2.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	HeaderLineShadow_2.BorderSizePixel = 0
+	HeaderLineShadow_2.Position = UDim2.new(0, 0, 1, 0)
+	HeaderLineShadow_2.Size = UDim2.new(1, 0, 1, 5)
+
+	UIGradient_2.Rotation = -90
+	UIGradient_2.Transparency = NumberSequence.new{NumberSequenceKeypoint.new(0.00, 0.00), NumberSequenceKeypoint.new(1.00, 1.00)}
+	UIGradient_2.Parent = HeaderLineShadow_2
+
+	UICorner_6.CornerRadius = UDim.new(0, 5)
+	UICorner_6.Parent = HeaderLineShadow_2
+
+	Sunset:Drag(FatalFrame,FatalFrame,0.1);
+
+	UserInputService.InputBegan:Connect(function(input,istyping)
+		if not istyping then
+			if input.KeyCode == Window.Keybind or input.KeyCode.Name == Window.Keybind then
+				Fatal.Toggle = not Fatal.Toggle;
+
+				ToggleUI(Fatal.Toggle);
+			end;
+		end
+	end)
+
+	function Fatal:SetUsername(name: string)
+		User_name.Text = name or Client.DisplayName;
+	end;
+
+	function Fatal:SetProfile(icon: string)
+		UserIcon.Image = icon or Players:GetUserThumbnailAsync(Client.UserId,Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size180x180);
+	end;
+
+	function Fatal:SetExpire(str: string)
+		expire_days.Text = string.format("<font transparency=\"0.5\">expires:</font> <font color=\"#f53174\">%s</font>",str)
+	end;
+
+	function Fatal:GetFlags()
+		return Sunset.WindowFlags[Sunsetwin];
+	end;
+
+	function Fatal:AddConfig()
+		local ConfigButton = Instance.new("ImageButton")
+
+		ConfigButton.Name = "ConfigButton"
+		ConfigButton.Parent = Bottom;
+		ConfigButton.AnchorPoint = Vector2.new(0, 0.5)
+		ConfigButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ConfigButton.BackgroundTransparency = 1.000
+		ConfigButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ConfigButton.BorderSizePixel = 0
+		ConfigButton.Position = UDim2.new(0, 57, 0.5, 0)
+		ConfigButton.Size = UDim2.new(0, 16, 0, 16)
+		ConfigButton.ZIndex = 4
+		ConfigButton.Image = "rbxassetid://10723387721"
+		ConfigButton.ImageTransparency = 0.500;
+
+		Sunset:CreateHover(ConfigButton,function(bool)
+			if bool then
+				Sunset:CreateAnimation(ConfigButton,0.3,{
+					ImageTransparency = 0.2500;
+				})
+			else
+				Sunset:CreateAnimation(ConfigButton,0.3,{
+					ImageTransparency = 0.500;
+				})
+			end;
+		end);
+
+		return Sunset:CreateConfigWindow(Sunsetwin,Fatal,ConfigButton);
+	end;
+
+	function Fatal:LoadConfig(config)
+
+		for i,v in next , config do
+			if i ~= "Info" then
+				local Element = Sunset.WindowFlags[Sunsetwin][i];
+
+				if Element then
+
+					local Value = v.Value;
+					local MainValue;
+
+					task.spawn(function()
+						if Value.Type == "String" then
+							Element:SetValue(tostring(Value.Value));
+						elseif Value.Type == "Boolean" then
+							Element:SetValue((typeof(Value.Value) == 'boolean' and Value.Value) or (Value.Value == "true" and true or false));
+						elseif Value.Type == "Number" then
+							Element:SetValue(Value.Value);
+						elseif Value.Type == "Color3" then
+							Element:SetValue(Color3.new(Value.Value.R,Value.Value.G,Value.Value.B) , Value.Value.Transparency);
+						elseif Value.Type == "Table" then
+							Element:SetValue(Value.Value);
+
+						end;
+					end);
+				end;
+
+			end;
+		end;
+	end;
+
+	function Fatal:GetFlagConfig()
+		local Flags = Fatal:GetFlags();
+
+		local ConfigElement = {};
+
+		for i,v in next , Flags do
+			local ValueData = {};
+			local Value = v:GetValue();
+
+			if typeof(Value) == "string" then
+				ValueData.Type = "String";
+				ValueData.Value = Value;
+			elseif typeof(Value) == "boolean" then
+				ValueData.Type = "Boolean";
+				ValueData.Value = Value;
+			elseif typeof(Value) == "number" then
+				ValueData.Type = "Number";
+				ValueData.Value = Value;
+			elseif typeof(Value) == "Color3" then
+				ValueData.Type = "Color3";
+
+				local Color = Value.Color;
+				local Transparency = Value.Transparency;
+
+				ValueData.Value = {
+					R = Color.R,
+					G = Color.G,
+					B = Color.B,
+
+					Transparency = Transparency
+				};
+			elseif typeof(Value) == "table" then
+				if Value.Color and Value.Transparency then
+					ValueData.Type = "Color3";
+
+					local Color = Value.Color;
+					local Transparency = Value.Transparency;
+
+					ValueData.Value = {
+						R = Color.R,
+						G = Color.G,
+						B = Color.B,
+
+						Transparency = Transparency
+					};
+				else
+					ValueData.Type = "Table";
+					ValueData.Value = Value;
+				end;
+			else
+				ValueData.Type = "Unknow";
+				ValueData.Value = nil;
+			end;
+
+			rawset(ConfigElement,i,{
+				FlagId = v.Flag,
+				Value = ValueData,
+			})
+		end;
+
+		return ConfigElement;
+	end;
+
+	function Fatal:AddMenu(Menu : Menu)
+		Menu = Menu or {};
+		Menu.Name = Menu.Name or "EXAMPLE";
+		Menu.Icon = Menu.Icon or "eye";
+		Menu.AutoFill = (Menu.AutoFill == nil and true) or false;
+
+		local MenuLib = {};
+		local MenuButton = Instance.new("Frame")
+		local UICorner = Instance.new("UICorner")
+		local UIStroke = Instance.new("UIStroke")
+		local Icon = Instance.new("ImageLabel")
+		local UICorner_2 = Instance.new("UICorner")
+		local menu_name = Instance.new("TextLabel")
+
+		MenuButton.Name = Sunset:RandomString()
+		MenuButton.Parent = tbc;
+		MenuButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		MenuButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		MenuButton.BorderSizePixel = 0
+		MenuButton.Size = UDim2.new(0, 90, 0.85, 0)
+		MenuButton.ZIndex = 5
+
+		UICorner.CornerRadius = UDim.new(0, 3)
+		UICorner.Parent = MenuButton
+
+		UIStroke.Transparency = 0.950
+		UIStroke.Parent = MenuButton
+
+		Icon.Name = Sunset:RandomString()
+		Icon.Parent = MenuButton
+		Icon.AnchorPoint = Vector2.new(0, 0.5)
+		Icon.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Icon.BackgroundTransparency = 1.000
+		Icon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Icon.BorderSizePixel = 0
+		Icon.Position = UDim2.new(0, 5, 0.5, 0)
+		Icon.Size = UDim2.new(0.800000012, 0, 0.800000012, 0)
+		Icon.SizeConstraint = Enum.SizeConstraint.RelativeYY
+		Icon.ZIndex = 5
+		Icon.Image = Sunset:GetIcon(Menu.Icon);
+		Icon.ImageColor3 = Sunset.Colors.Main
+		Icon.ScaleType = Enum.ScaleType.Crop
+
+		UICorner_2.CornerRadius = UDim.new(1, 0)
+		UICorner_2.Parent = Icon
+
+		menu_name.Name = Sunset:RandomString()
+		menu_name.Parent = MenuButton
+		menu_name.AnchorPoint = Vector2.new(0, 0.5)
+		menu_name.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		menu_name.BackgroundTransparency = 1.000
+		menu_name.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		menu_name.BorderSizePixel = 0
+		menu_name.Position = UDim2.new(0, 28, 0.5, 0)
+		menu_name.Size = UDim2.new(1, 0, 1, 0)
+		menu_name.ZIndex = 5
+		menu_name.Font = Enum.Font.GothamBold
+		menu_name.Text = Menu.Name
+		menu_name.TextColor3 = Color3.fromRGB(255, 255, 255)
+		menu_name.TextSize = 13.000
+		menu_name.TextStrokeTransparency = 0.900
+		menu_name.TextTransparency = 0.150
+		menu_name.TextXAlignment = Enum.TextXAlignment.Left
+
+		local text_size = Sunset:GetTextSize(menu_name);
+
+		MenuButton.Size = UDim2.new(0, text_size.X + 33, 0.85, 0)
+
+		local MenuLiber = Instance.new("Frame")
+		local Left = Instance.new("ScrollingFrame")
+		local UIListLayout = Instance.new("UIListLayout")
+		local Center = Instance.new("ScrollingFrame")
+		local UIListLayout_2 = Instance.new("UIListLayout")
+		local Right = Instance.new("ScrollingFrame")
+		local UIListLayout_3 = Instance.new("UIListLayout")
+
+		MenuLiber.Name = Sunset:RandomString()
+		MenuLiber.Parent = MenuFrame
+		MenuLiber.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		MenuLiber.BackgroundTransparency = 1.000
+		MenuLiber.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		MenuLiber.BorderSizePixel = 0
+		MenuLiber.ClipsDescendants = true
+		MenuLiber.Size = UDim2.new(1, 0, 1, 0)
+		MenuLiber.ZIndex = 7
+
+		Left.Name = Sunset:RandomString()
+		Left.Parent = MenuLiber
+		Left.Active = true
+		Left.AnchorPoint = Vector2.new(0.5, 0.5)
+		Left.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Left.BackgroundTransparency = 1.000
+		Left.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Left.BorderSizePixel = 0
+		Left.ClipsDescendants = false
+		Left.Position = UDim2.new(0.175, 0, 0.5, 0)
+		Left.Size = UDim2.new(0.32, 0, 1, -5)
+		Left.ScrollBarThickness = 0
+
+		UIListLayout.Parent = Left
+		UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		UIListLayout.Padding = UDim.new(0, 5)
+		UIListLayout.VerticalFlex = (Menu.AutoFill and Enum.UIFlexAlignment.Fill) or Enum.UIFlexAlignment.None;
+
+		Center.Name = Sunset:RandomString()
+		Center.Parent = MenuLiber
+		Center.Active = true
+		Center.AnchorPoint = Vector2.new(0.5, 0.5)
+		Center.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Center.BackgroundTransparency = 1.000
+		Center.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Center.BorderSizePixel = 0
+		Center.ClipsDescendants = false
+		Center.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Center.Size = UDim2.new(0.32, 0, 1, -5)
+		Center.ScrollBarThickness = 0
+
+		UIListLayout_2.Parent = Center
+		UIListLayout_2.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		UIListLayout_2.SortOrder = Enum.SortOrder.LayoutOrder
+		UIListLayout_2.Padding = UDim.new(0, 5)
+		UIListLayout_2.VerticalFlex = (Menu.AutoFill and Enum.UIFlexAlignment.Fill) or Enum.UIFlexAlignment.None;
+
+		Right.Name = Sunset:RandomString()
+		Right.Parent = MenuLiber
+		Right.Active = true
+		Right.AnchorPoint = Vector2.new(0.5, 0.5)
+		Right.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Right.BackgroundTransparency = 1.000
+		Right.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		Right.BorderSizePixel = 0
+		Right.ClipsDescendants = false
+		Right.Position = UDim2.new(0.825, 0, 0.5, 0)
+		Right.Size = UDim2.new(0.32, 0, 1, -5)
+		Right.ScrollBarThickness = 0
+
+		UIListLayout_3.Parent = Right
+		UIListLayout_3.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		UIListLayout_3.SortOrder = Enum.SortOrder.LayoutOrder
+		UIListLayout_3.Padding = UDim.new(0, 5)
+		UIListLayout_3.VerticalFlex = (Menu.AutoFill and Enum.UIFlexAlignment.Fill) or Enum.UIFlexAlignment.None;
+
+		local BindEvent = Instance.new('BindableEvent',MenuLiber);
+		BindEvent.Name = Sunset:RandomString();
+
+		if not Menu.AutoFill then
+			Sunset:ScrollSignal(Right,UIListLayout_3,'Y');
+			Sunset:ScrollSignal(Center,UIListLayout_2,'Y');
+			Sunset:ScrollSignal(Left,UIListLayout,'Y');
+		else
+			Right.CanvasSize = UDim2.new(0,0,0,0);
+			Left.CanvasSize = UDim2.new(0,0,0,0);
+			Center.CanvasSize = UDim2.new(0,0,0,0);
+		end;
+
+		Fatal.Signal.Event:Connect(function(Bool)
+			if Bool then
+				Sunset:CreateAnimation(MenuButton,0.5,{
+					BackgroundTransparency = (MenuLiber.Visible and 0) or 1
+				})
+
+				Sunset:CreateAnimation(UIStroke,0.5,{
+					Transparency = 0.950
+				})
+
+				Sunset:CreateAnimation(Left,0.3,{
+					Position = UDim2.new(0.175, 0, 0.5, 0)
+				})
+
+				Sunset:CreateAnimation(Center,0.4,{
+					Position = UDim2.new(0.5, 0, 0.5, 0)
+				})
+
+				Sunset:CreateAnimation(Right,0.5,{
+					Position = UDim2.new(0.825, 0, 0.5, 0)
+				})
+
+				Sunset:CreateAnimation(Icon,0.5,{
+					ImageTransparency = (MenuLiber.Visible and 0.15) or 0.5
+				})
+
+				Sunset:CreateAnimation(menu_name,0.5,{
+					TextStrokeTransparency = 0.900,
+					TextTransparency = (MenuLiber.Visible and 0.15) or 0.5
+				})
+			else
+				Sunset:CreateAnimation(Left,0.5,{
+					Position = UDim2.new(0.175, 0, 0.5, 1)
+				})
+
+				Sunset:CreateAnimation(Center,0.5,{
+					Position = UDim2.new(0.5, 0, 0.5, 2)
+				})
+
+				Sunset:CreateAnimation(Right,0.5,{
+					Position = UDim2.new(0.825, 0, 0.5, 3)
+				})
+
+				Sunset:CreateAnimation(MenuButton,0.5,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(UIStroke,0.5,{
+					Transparency = 1
+				})
+
+				Sunset:CreateAnimation(Icon,0.5,{
+					ImageTransparency = 1
+				})
+
+				Sunset:CreateAnimation(menu_name,0.5,{
+					TextStrokeTransparency = 1,
+					TextTransparency = 1
+				})
+			end;
+		end)
+
+		local ValueSelect = function(val)
+			if val then
+				MenuLiber.Visible = true;
+
+				Sunset:CreateAnimation(Icon,0.5,{
+					ImageTransparency = 0.15,
+					ImageColor3 = Sunset.Colors.Main
+				});
+
+				Sunset:CreateAnimation(menu_name,0.5,{
+					TextTransparency = 0.15
+				});
+
+				Sunset:CreateAnimation(MenuButton,0.5,{
+					BackgroundTransparency = 0
+				})
+
+				BindEvent:SetAttribute('V',true);
+				BindEvent:Fire(true);
+			else
+				BindEvent:SetAttribute('V',false);
+				BindEvent:Fire(false);
+
+				MenuLiber.Visible = false;
+
+				Sunset:CreateAnimation(Icon,0.5,{
+					ImageTransparency = 0.5,
+					ImageColor3 = Color3.fromRGB(255, 255, 255)
+				});
+
+				Sunset:CreateAnimation(MenuButton,0.5,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(menu_name,0.5,{
+					TextTransparency = 0.5
+				});
+			end;
+		end;
+
+		local _B = {
+			Root = MenuLiber,
+			ValueSelect = ValueSelect,
+			Bindable = BindEvent,
+		};
+
+		if not Fatal.MenuSelected then
+			Fatal.MenuSelected = _B;
+
+			ValueSelect(true);
+		else
+			ValueSelect(false);
+		end;
+
+		table.insert(Fatal.Menus,_B)
+
+		Sunset:CreateHover(MenuButton,function(bool)
+			if Fatal.MenuSelected.Root ~= MenuLiber then
+				if bool then
+					Sunset:CreateAnimation(Icon,0.5,{
+						ImageTransparency = 0.2,
+						ImageColor3 = Color3.fromRGB(255, 255, 255)
+					});
+
+					Sunset:CreateAnimation(MenuButton,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(menu_name,0.5,{
+						TextTransparency = 0.2
+					});
+				else
+					Sunset:CreateAnimation(Icon,0.5,{
+						ImageTransparency = 0.5,
+						ImageColor3 = Color3.fromRGB(255, 255, 255)
+					});
+
+					Sunset:CreateAnimation(MenuButton,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(menu_name,0.5,{
+						TextTransparency = 0.5
+					});
+				end
+			end;
+		end)
+
+		Sunset:NewInput(MenuButton,function()
+			for i,v in next , Fatal.Menus do
+				if v.Root == MenuLiber then
+					Fatal.MenuSelected = v;
+
+					v.ValueSelect(true)
+				else
+					v.ValueSelect(false)
+				end;
+			end;
+		end);
+		
+		function MenuLib:AddPreview(Config: Preview)
+			Config = Config or {};
+			Config.Name = Config.Name or "PREVIEW";
+			Config.Position = Config.Position or "left";
+			Config.Height = Config.Height or 0;
+			
+			local Preview = Instance.new("Frame")
+			local PreviewName = Instance.new("TextLabel")
+			local Main = Instance.new("Frame")
+			local UIStroke = Instance.new("UIStroke")
+			local UICorner = Instance.new("UICorner")
+			local MainBlock = Instance.new("Frame")
+
+			Preview.Name = "Preview"
+			Preview.Parent = (string.lower(Config.Position) == 'left' and Left) or (string.lower(Config.Position) == 'center' and Center) or Right;
+			Preview.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+			Preview.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Preview.BorderSizePixel = 0
+			Preview.ClipsDescendants = true
+			Preview.ZIndex = 15;
+			Preview.Size = UDim2.new(1, 0, 0, 25 + Config.Height)
+	
+			PreviewName.Name = "PreviewName"
+			PreviewName.Parent = Preview
+			PreviewName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			PreviewName.BackgroundTransparency = 1.000
+			PreviewName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			PreviewName.BorderSizePixel = 0
+			PreviewName.Position = UDim2.new(0, 10, 0, 0)
+			PreviewName.Size = UDim2.new(1, 0, 0, 15)
+			PreviewName.ZIndex = 19
+			PreviewName.FontFace = Sunset.FontSemiBold
+			PreviewName.Text = Config.Name
+			PreviewName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			PreviewName.TextSize = 15.000
+			PreviewName.TextStrokeTransparency = 0.750
+			PreviewName.TextXAlignment = Enum.TextXAlignment.Left
+
+			Main.Name = "Main"
+			Main.Parent = Preview
+			Main.AnchorPoint = Vector2.new(0.5, 1)
+			Main.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+			Main.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Main.BorderSizePixel = 0
+			Main.Position = UDim2.new(0.5, 0, 1, -1)
+			Main.Size = UDim2.new(1, -5, 1, -10)
+			Main.ZIndex = 17
+
+			UIStroke.Color = Color3.fromRGB(29, 29, 29)
+			UIStroke.Parent = Main
+
+			UICorner.CornerRadius = UDim.new(0, 2)
+			UICorner.Parent = Main
+
+			MainBlock.Name = "MainBlock"
+			MainBlock.Parent = Main
+			MainBlock.AnchorPoint = Vector2.new(0.5, 0.5)
+			MainBlock.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			MainBlock.BackgroundTransparency = 1.000
+			MainBlock.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			MainBlock.BorderSizePixel = 0
+			MainBlock.Position = UDim2.new(0.5, 0, 0.5, 0)
+			MainBlock.Size = UDim2.new(1, -5, 1, -5)
+			MainBlock.ZIndex = 18
+			
+			local Toggle = function(v)
+				if v then
+					Sunset:CreateAnimation(Preview,0.5,{
+						BackgroundTransparency = 0
+					})
+
+					Sunset:CreateAnimation(PreviewName,0.5,{
+						TextStrokeTransparency = 0.750,
+						TextTransparency = 0
+					})
+					
+					Sunset:CreateAnimation(Main,0.5,{
+						BackgroundTransparency = 0
+					})
+					
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 0
+					})
+					
+					Sunset:CreateAnimation(MainBlock,0.5,{
+						Size = UDim2.new(1, -5, 1, -5)
+					})
+				else
+					Sunset:CreateAnimation(Preview,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(PreviewName,0.5,{
+						TextStrokeTransparency = 1,
+						TextTransparency = 1
+					})
+
+					Sunset:CreateAnimation(Main,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 1
+					})
+
+					Sunset:CreateAnimation(MainBlock,0.5,{
+						Size = UDim2.new(0,0,0,0)
+					})
+				end
+			end;
+
+			Toggle(BindEvent:GetAttribute('V'));
+
+			BindEvent.Event:Connect(Toggle);
+			
+			return MainBlock;
+		end;
+
+		function MenuLib:AddListBox(Config : Listbox)
+			Config = Config or {};
+			Config.Name = Config.Name or "LIST BOX";
+			Config.Position = Config.Position or "left";
+			Config.Height = Config.Height or 0;
+			Config.Values = Config.Values or {};
+			Config.Multi = Config.Multi or false;
+			Config.Default = Config.Default or ((Config.Multi and nil) or {});
+			Config.Callback = Config.Callback or function() end;
+
+			table.insert(Fatal.ElementContents,{
+				Name = Config.Name,
+				Path = Menu.Name .. " > ".. Config.Name,
+				_TAB = _B
+			});
+
+			local ListBox = Instance.new("Frame")
+			local Elements = Instance.new("Frame")
+			local UIStroke = Instance.new("UIStroke")
+			local UICorner = Instance.new("UICorner")
+			local SearchBox = Instance.new("Frame")
+			local TextBox = Instance.new("TextBox")
+			local UICorner_2 = Instance.new("UICorner")
+			local UIStroke_2 = Instance.new("UIStroke")
+			local OptionButton = Instance.new("ImageButton")
+			local ScrollingFrame = Instance.new("ScrollingFrame")
+			local UICorner_3 = Instance.new("UICorner")
+			local UIStroke_3 = Instance.new("UIStroke")
+			local UIListLayout = Instance.new("UIListLayout")
+			local SpaceBox = Instance.new("Frame")
+			local ListName = Instance.new("TextLabel")
+
+			ListBox.Name = Sunset:RandomString()
+			ListBox.Parent = (string.lower(Config.Position) == 'left' and Left) or (string.lower(Config.Position) == 'center' and Center) or Right;
+			ListBox.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+			ListBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			ListBox.BorderSizePixel = 0
+			ListBox.ClipsDescendants = true
+			ListBox.Size = UDim2.new(1, 0, 0, 350)
+			ListBox.ZIndex = 10
+			ListBox.ClipsDescendants = true;
+
+			Sunset:AddDragBlacklist(ScrollingFrame);
+
+			Elements.Name = Sunset:RandomString()
+			Elements.Parent = ListBox
+			Elements.AnchorPoint = Vector2.new(0.5, 1)
+			Elements.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+			Elements.BackgroundTransparency = 0
+			Elements.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Elements.BorderSizePixel = 0
+			Elements.Position = UDim2.new(0.5, 0, 1, -1)
+			Elements.Size = UDim2.new(1, -5, 1, -10)
+			Elements.ZIndex = 10
+
+			UIStroke.Color = Color3.fromRGB(29, 29, 29)
+			UIStroke.Parent = Elements
+
+			UICorner.CornerRadius = UDim.new(0, 2)
+			UICorner.Parent = Elements
+
+			SearchBox.Name = Sunset:RandomString()
+			SearchBox.Parent = Elements
+			SearchBox.BackgroundColor3 = Sunset.Colors.Black
+			SearchBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			SearchBox.BorderSizePixel = 0
+			SearchBox.ClipsDescendants = true
+			SearchBox.Position = UDim2.new(0, 10, 0, 15)
+			SearchBox.Size = UDim2.new(0, 195, 0, 16)
+			SearchBox.ZIndex = 10
+
+			TextBox.Parent = SearchBox
+			TextBox.BackgroundColor3 = Sunset.Colors.Black
+			TextBox.BackgroundTransparency = 1.000
+			TextBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			TextBox.BorderSizePixel = 0
+			TextBox.Position = UDim2.new(0, 5, 0, 0)
+			TextBox.Size = UDim2.new(1, -10, 0, 16)
+			TextBox.ZIndex = 11
+			TextBox.ClearTextOnFocus = false
+			TextBox.FontFace = Sunset.FontSemiBold
+			TextBox.PlaceholderText = "Start typing..."
+			TextBox.Text = ""
+			TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+			TextBox.TextSize = 11.000
+			TextBox.TextXAlignment = Enum.TextXAlignment.Left
+
+			UICorner_2.CornerRadius = UDim.new(0, 3)
+			UICorner_2.Parent = SearchBox
+
+			UIStroke_2.Transparency = 0.750
+			UIStroke_2.Color = Color3.fromRGB(29, 29, 29)
+			UIStroke_2.Parent = SearchBox
+
+			OptionButton.Name = Sunset:RandomString()
+			OptionButton.Parent = Elements
+			OptionButton.AnchorPoint = Vector2.new(1, 0)
+			OptionButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			OptionButton.BackgroundTransparency = 1.000
+			OptionButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			OptionButton.BorderSizePixel = 0
+			OptionButton.Position = UDim2.new(1, -10, 0, 16)
+			OptionButton.Size = UDim2.new(0, 13, 0, 13)
+			OptionButton.SizeConstraint = Enum.SizeConstraint.RelativeYY
+			OptionButton.ZIndex = 11
+			OptionButton.Image = "http://www.roblox.com/asset/?id=14007344336"
+			OptionButton.ImageTransparency = 0.600
+			OptionButton.Visible = Config.Option or false;
+
+			ScrollingFrame.Parent = Elements
+			ScrollingFrame.Active = true
+			ScrollingFrame.AnchorPoint = Vector2.new(0.5, 0)
+			ScrollingFrame.BackgroundColor3 = Sunset.Colors.Black
+			ScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			ScrollingFrame.BorderSizePixel = 0
+			ScrollingFrame.Position = UDim2.new(0.5, 0, 0, 40)
+			ScrollingFrame.Size = UDim2.new(1, -20, 1, -50)
+			ScrollingFrame.ZIndex = 11
+			ScrollingFrame.ScrollBarThickness = 0
+
+			UICorner_3.CornerRadius = UDim.new(0, 3)
+			UICorner_3.Parent = ScrollingFrame
+
+			UIStroke_3.Transparency = 0.750
+			UIStroke_3.Color = Color3.fromRGB(29, 29, 29)
+			UIStroke_3.Parent = ScrollingFrame
+
+			UIListLayout.Parent = ScrollingFrame
+			UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			UIListLayout.Padding = UDim.new(0, 5)
+
+			UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+				local all = (#ScrollingFrame:GetChildren() - 1);
+				local scale = math.clamp((all * (10 + UIListLayout.Padding.Offset)) + (Config.Height + UIListLayout.Padding.Offset),25,400);
+
+				if Menu.AutoFill then
+					ListBox.Size = UDim2.new(1,0,0,scale / 2.5);
+				else
+					ListBox.Size = UDim2.new(1,0,0,scale);
+				end;
+
+				ScrollingFrame.CanvasSize = UDim2.fromOffset(0,UIListLayout.AbsoluteContentSize.Y);
+			end)
+
+			SpaceBox.Name = Sunset:RandomString()
+			SpaceBox.Parent = ScrollingFrame
+			SpaceBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			SpaceBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			SpaceBox.BorderSizePixel = 0
+			SpaceBox.Size = UDim2.new(0, 0, 0, 1)
+
+			ListName.Name = Sunset:RandomString()
+			ListName.Parent = ListBox
+			ListName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			ListName.BackgroundTransparency = 1.000
+			ListName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			ListName.BorderSizePixel = 0
+			ListName.Position = UDim2.new(0, 10, 0, 0)
+			ListName.Size = UDim2.new(1, 0, 0, 15)
+			ListName.ZIndex = 10
+			ListName.FontFace = Sunset.FontSemiBold
+			ListName.Text = Config.Name
+			ListName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			ListName.TextSize = 15.000
+			ListName.TextStrokeTransparency = 0.750
+			ListName.TextXAlignment = Enum.TextXAlignment.Left
+
+			local new_button = function()
+				local db_selected = Instance.new("TextButton")
+
+				db_selected.Name = Sunset:RandomString()
+				db_selected.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+				db_selected.BackgroundTransparency = 1.000
+				db_selected.BorderColor3 = Color3.fromRGB(0, 0, 0)
+				db_selected.BorderSizePixel = 0
+				db_selected.Size = UDim2.new(1, 0, 0, 10)
+				db_selected.ZIndex = 15
+				db_selected.FontFace = Sunset.FontSemiBold
+				db_selected.TextColor3 = Sunset.Colors.Main
+				db_selected.TextSize = 12.000
+				db_selected.TextTransparency = 0.5;
+				db_selected.TextXAlignment = Enum.TextXAlignment.Left
+
+				return db_selected;
+			end;
+
+			local Toggle = function(v)
+				if v then
+					Sunset:CreateAnimation(ListBox,0.5,{
+						BackgroundTransparency = 0
+					})
+
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 0
+					})
+
+					Sunset:CreateAnimation(UIStroke_2,0.5,{
+						Transparency = 0.75
+					})
+
+					Sunset:CreateAnimation(UIStroke_3,0.5,{
+						Transparency = 0.75
+					})
+
+					Sunset:CreateAnimation(SearchBox,0.5,{
+						BackgroundTransparency = 0
+					})
+
+					Sunset:CreateAnimation(TextBox,0.5,{
+						TextTransparency = 0
+					})
+
+					Sunset:CreateAnimation(OptionButton,0.45,{
+						ImageTransparency = (Config.Option and 0.6) or 1,
+					})
+
+					Sunset:CreateAnimation(ScrollingFrame,0.45,{
+						BackgroundTransparency = 0,
+						Position = UDim2.new(0.5, 0, 0, 40)
+					})
+
+					table.foreach(ScrollingFrame:GetChildren(),function(i,v)
+						if v:IsA('TextButton') then
+							Sunset:CreateAnimation(v,0.45,{
+								TextTransparency = 0.5
+							});
+						end;
+					end);
+
+					Sunset:CreateAnimation(ListName,0.5,{
+						TextStrokeTransparency = 0.75,
+						TextTransparency = 0
+					})
+				else
+
+					table.foreach(ScrollingFrame:GetChildren(),function(i,v)
+						if v:IsA('TextButton') then
+							Sunset:CreateAnimation(v,0.45,{
+								TextTransparency = 1
+							});
+						end;
+					end);
+
+					Sunset:CreateAnimation(ListBox,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 1
+					})
+
+					Sunset:CreateAnimation(UIStroke_2,0.5,{
+						Transparency = 1
+					})
+
+					Sunset:CreateAnimation(UIStroke_3,0.5,{
+						Transparency = 1
+					})
+
+					Sunset:CreateAnimation(SearchBox,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(TextBox,0.5,{
+						TextTransparency = 1
+					})
+
+					Sunset:CreateAnimation(OptionButton,0.45,{
+						ImageTransparency = 1
+					})
+
+					Sunset:CreateAnimation(ScrollingFrame,0.45,{
+						BackgroundTransparency = 1,
+						Position = UDim2.new(0.5, 0, 0, 40)
+					})
+
+					Sunset:CreateAnimation(ListName,0.5,{
+						TextStrokeTransparency = 1,
+						TextTransparency = 1
+					})
+				end
+			end;
+
+			Toggle(BindEvent:GetAttribute('V'));
+
+			BindEvent.Event:Connect(Toggle);
+
+			local DearchDelay = tick();
+
+			TextBox:GetPropertyChangedSignal('Text'):Connect(function()
+				DearchDelay = tick();
+
+				if not TextBox.Text:byte() then
+					for i,v in next , ScrollingFrame:GetChildren() do
+						if v:IsA('TextButton') then
+							v.Visible = true;
+						end;
+					end;
+
+					return;
+				end;
+
+				task.delay(0.25,function()
+					if (tick() - DearchDelay) > 0.25 then
+						for i,v in next , ScrollingFrame:GetChildren() do
+							if v:IsA('TextButton') then
+								if string.find(string.lower(v.Text),string.lower(TextBox.Text),1,true) then
+									v.Visible = true;
+								else
+									v.Visible = false;
+								end;
+							end;
+						end;
+					end;
+				end)
+			end);
+
+			local res;
+			res = Sunset:CreateResponse({
+				Refresh = function()
+					for i,v in next , ScrollingFrame:GetChildren() do
+						if v:IsA('TextButton') then
+							v:Destroy();
+						end;
+					end;
+
+					local selectedmem;
+
+					for i,v in next , Config.Values do
+						local bth = new_button();
+
+						bth.Text = string.rep(" ",2)..tostring(v);
+
+						bth.Parent = ScrollingFrame;
+
+						if Config.Multi then
+							if (typeof(Config.Default) == 'table' and (Config.Default[v] or table.find(Config.Default,v))) or Config.Default == v then
+								Config.Default[v] = true
+								bth.TextColor3 = Sunset.Colors.Main;
+								bth.TextTransparency = 0;
+
+							else
+								bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+								bth.TextTransparency = 0.5;
+
+								Config.Default[v] = false
+							end;
+
+							Sunset:CreateHover(bth,function(bool)
+								if not Config.Default[v] then
+									if bool then
+										Sunset:CreateAnimation(bth,0.25,{
+											TextTransparency = 0;
+										})
+									else
+										Sunset:CreateAnimation(bth,0.25,{
+											TextTransparency = 0.5;
+										})
+									end;
+								end;
+							end)
+
+							bth.MouseButton1Click:Connect(function()
+								Config.Default[v] = not Config.Default[v];
+
+								if Config.Default[v] then
+									bth.TextColor3 = Sunset.Colors.Main;
+									bth.TextTransparency = 0;
+
+								else
+									bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+									bth.TextTransparency = 0.5;
+								end;
+
+								Config.Callback(Config.Default);
+							end)
+						else
+							if v == Config.Default then
+								selectedmem = bth;
+								Config.Default = v;
+
+								bth.TextColor3 = Sunset.Colors.Main;
+								bth.TextTransparency = 0;
+
+							else
+								bth.TextColor3 = Color3.fromRGB(255, 255, 255);
+								bth.TextTransparency = 0.5;
+							end;
+
+							Sunset:CreateHover(bth,function(bool)
+								if Config.Default ~= v then
+									if bool then
+										Sunset:CreateAnimation(bth,0.25,{
+											TextTransparency = 0;
+										})
+									else
+										Sunset:CreateAnimation(bth,0.25,{
+											TextTransparency = 0.5;
+										})
+									end;
+								end;
+							end)
+
+							bth.MouseButton1Click:Connect(function()
+								if selectedmem then
+									selectedmem.TextColor3 = Color3.fromRGB(255, 255, 255);
+									selectedmem.TextTransparency = 0.5;
+								end;
+
+								bth.TextTransparency = 0;
+								bth.TextColor3 = Sunset.Colors.Main;
+								selectedmem = bth;
+								Config.Default = v;
+
+								Config.Callback(v);
+							end)
+						end;
+					end;
+
+					Config.Callback(Config.Default);
+				end,
+				SetValues = function(value)
+					Config.Values = value;
+
+				end,
+				SetDefault = function(value)
+					Config.Default = value;
+				end,
+				GetValue = function()
+					return Config.Default;
+				end,
+				Flag = Config.Flag and Config.Flag.."ListBox",
+				SetValue = function(a)
+
+					Config.Default = a;
+
+					res:Refresh();
+
+					Config.Callback(Config.Default);
+				end,
+
+				Option = (Config.Option and Sunset:CreateOption(OptionButton)) or nil;
+			});
+
+			res:Refresh();
+
+			if Config.Flag then
+				Sunset.WindowFlags[Sunsetwin][Config.Flag.."ListBox"] = res;
+			end;
+
+			return res;
+		end;
+
+		function MenuLib:AddSection(Config : Section)
+			Config = Config or {};
+			Config.Name = Config.Name or "SECTION";
+			Config.Position = Config.Position or "center";
+			Config.Height = Config.Height or 0;
+
+			table.insert(Fatal.ElementContents,{
+				Name = Config.Name,
+				Path = Menu.Name .. " > ".. Config.Name,
+				_TAB = _B
+			});
+
+			local Section = Instance.new("Frame")
+			local Elements = Instance.new("Frame")
+			local UIStroke = Instance.new("UIStroke")
+			local UICorner = Instance.new("UICorner")
+			local UIListLayout = Instance.new("UIListLayout")
+			local SpaceBox = Instance.new("Frame")
+			local SectionName = Instance.new("TextLabel")
+
+			local Toggle = function(v)
+				if v then
+					Sunset:CreateAnimation(Section,0.5,{
+						BackgroundTransparency = 0
+					})
+
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 0
+					})
+
+					Sunset:CreateAnimation(SectionName,0.5,{
+						TextStrokeTransparency = 0.750,
+						TextTransparency = 0
+					})
+				else
+					Sunset:CreateAnimation(Section,0.5,{
+						BackgroundTransparency = 1
+					})
+
+					Sunset:CreateAnimation(UIStroke,0.5,{
+						Transparency = 1
+					})
+
+					Sunset:CreateAnimation(SectionName,0.5,{
+						TextStrokeTransparency = 1,
+						TextTransparency = 1
+					})
+				end
+			end;
+
+			Section.Name = Sunset:RandomString()
+			Section.Parent = (string.lower(Config.Position) == 'left' and Left) or (string.lower(Config.Position) == 'center' and Center) or Right;
+			Section.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+			Section.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Section.BorderSizePixel = 0
+			Section.ClipsDescendants = true
+			Section.Size = UDim2.new(1, 0, 0, 0)
+
+			Elements.Name = Sunset:RandomString()
+			Elements.Parent = Section
+			Elements.AnchorPoint = Vector2.new(0.5, 1)
+			Elements.BackgroundColor3 = Color3.fromRGB(24, 24, 24)
+			Elements.BackgroundTransparency = 0
+			Elements.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Elements.BorderSizePixel = 0
+			Elements.Position = UDim2.new(0.5, 0, 1, -1)
+			Elements.Size = UDim2.new(1, -5, 1, -10)
+
+			UIStroke.Color = Color3.fromRGB(29, 29, 29)
+			UIStroke.Parent = Elements
+
+			UICorner.CornerRadius = UDim.new(0, 2)
+			UICorner.Parent = Elements
+
+			UIListLayout.Parent = Elements
+			UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+			UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+			UIListLayout.Padding = UDim.new(0, 5)
+
+			SpaceBox.Name = Sunset:RandomString()
+			SpaceBox.Parent = Elements
+			SpaceBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			SpaceBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			SpaceBox.BorderSizePixel = 0
+			SpaceBox.Size = UDim2.new(0, 0, 0, 10)
+
+			SectionName.Name = Sunset:RandomString()
+			SectionName.Parent = Section
+			SectionName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			SectionName.BackgroundTransparency = 1.000
+			SectionName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			SectionName.BorderSizePixel = 0
+			SectionName.Position = UDim2.new(0, 10, 0, 0)
+			SectionName.Size = UDim2.new(1, 0, 0, 15)
+			SectionName.FontFace = Sunset.FontSemiBold;
+			SectionName.Text = Config.Name
+			SectionName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			SectionName.TextSize = 15.000
+			SectionName.TextStrokeTransparency = 0.750
+			SectionName.TextXAlignment = Enum.TextXAlignment.Left
+
+
+			UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+				local MainScale = UIListLayout.AbsoluteContentSize.Y + 20 + Config.Height;
+
+				if not Menu.AutoFill then
+					Sunset:CreateAnimation(Section,0.25,{
+						Size = UDim2.new(1, 0, 0, MainScale)
+					})
+				else
+					Section.Size = UDim2.new(1,0,0,MainScale / 2.5);
+				end;
+			end);
+
+			Toggle(BindEvent:GetAttribute('V'));
+
+			BindEvent.Event:Connect(Toggle);
+
+			return Sunset:CreateElements(Elements,Elements.ZIndex,BindEvent,{
+				Path = Menu.Name .. " > ".. Config.Name,
+				Memory = function(Name)
+					table.insert(Fatal.ElementContents,{
+						Name = Name,
+						Path = Menu.Name .. " > ".. Config.Name .. " > " .. Name,
+						_TAB = _B
+					});
+				end,
+			});
+		end;
+
+		return MenuLib;
+	end;
+
+	do
+		InfoButton.Name = Sunset:RandomString()
+		InfoButton.Parent = Bottom
+		InfoButton.AnchorPoint = Vector2.new(1, 0.5)
+		InfoButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		InfoButton.BackgroundTransparency = 1.000
+		InfoButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		InfoButton.BorderSizePixel = 0
+		InfoButton.Position = UDim2.new(1, -5, 0.5, 0)
+		InfoButton.Size = UDim2.new(0, 16, 0, 16)
+		InfoButton.ZIndex = 4
+		InfoButton.Image = "rbxassetid://10723415903"
+		InfoButton.ImageTransparency = 0.500
+
+		SearchButton.Name = Sunset:RandomString()
+		SearchButton.Parent = Bottom
+		SearchButton.AnchorPoint = Vector2.new(0, 0.5)
+		SearchButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		SearchButton.BackgroundTransparency = 1.000
+		SearchButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		SearchButton.BorderSizePixel = 0
+		SearchButton.Position = UDim2.new(0, 10, 0.5, 0)
+		SearchButton.Size = UDim2.new(0, 16, 0, 16)
+		SearchButton.ZIndex = 4
+		SearchButton.Image = "rbxassetid://10734943674"
+		SearchButton.ImageTransparency = 0.500
+
+		SaveButton.Name = Sunset:RandomString()
+		SaveButton.Parent = Bottom
+		SaveButton.AnchorPoint = Vector2.new(0, 0.5)
+		SaveButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		SaveButton.BackgroundTransparency = 1.000
+		SaveButton.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		SaveButton.BorderSizePixel = 0
+		SaveButton.Position = UDim2.new(0, 35, 0.5, 0)
+		SaveButton.Size = UDim2.new(0, 16, 0, 16)
+		SaveButton.ZIndex = 4
+		SaveButton.Image = "rbxassetid://10734941499"
+		SaveButton.ImageTransparency = 0.500
+
+		Sunset:CreateHover(SaveButton,function(bool)
+			if bool then
+				Sunset:CreateAnimation(SaveButton,0.5,{
+					ImageTransparency = 0.1
+				})
+			else
+				Sunset:CreateAnimation(SaveButton,0.5,{
+					ImageTransparency = 0.5
+				})
+			end	
+		end);
+
+		Sunset:CreateHover(InfoButton,function(bool)
+			if bool then
+				Sunset:CreateAnimation(InfoButton,0.5,{
+					ImageTransparency = 0.1
+				})
+			else
+				Sunset:CreateAnimation(InfoButton,0.5,{
+					ImageTransparency = 0.5
+				})
+			end	
+		end);
+
+		function Fatal:AddSave(callback)
+			SaveButton.MouseButton1Click:Connect(callback);
+		end;
+
+		function Fatal:AddInfo(callback)
+			InfoButton.MouseButton1Click:Connect(callback);
+		end;
+	end;
+
+	do
+		local SearchFrame = Instance.new("Frame")
+		local UIStroke = Instance.new("UIStroke")
+		local UICorner = Instance.new("UICorner")
+		local DropShadow = Instance.new("ImageLabel")
+		local SearchBox = Instance.new("Frame")
+		local UICorner_2 = Instance.new("UICorner")
+		local UIStroke_2 = Instance.new("UIStroke")
+		local TextBox = Instance.new("TextBox")
+		local ScrollingFrame = Instance.new("ScrollingFrame")
+		local UIListLayout = Instance.new("UIListLayout")
+		local searchScale = UDim2.new(0, 295, 0, 295);
+
+		Sunset:AddDragBlacklist(SearchFrame);
+
+		local SearchToggle = function(value)
+			if value then
+				SearchFrame.Position = UDim2.fromOffset(SearchButton.AbsolutePosition.X - 5,SearchButton.AbsolutePosition.Y + (SearchButton.AbsoluteSize.Y * 3))
+
+				Sunset:CreateAnimation(SearchFrame,0.35,{
+					Size = searchScale
+				})
+
+				Sunset:CreateAnimation(DropShadow,0.35,{
+					ImageTransparency = 0.750
+				})
+
+				Sunset:CreateAnimation(SearchBox,0.35,{
+					BackgroundTransparency = 0
+				})
+
+				Sunset:CreateAnimation(UIStroke_2,0.5,{
+					Transparency = 0.650
+				})
+
+				Sunset:CreateAnimation(UIStroke,0.5,{
+					Transparency = 0
+				})
+
+				Sunset:CreateAnimation(TextBox,0.5,{
+					TextTransparency = 0
+				})
+
+				Sunset:CreateAnimation(TextBox,0.5,{
+					TextTransparency = 0
+				})
+			else
+				Sunset:CreateAnimation(UIStroke,0.5,{
+					Transparency = 1
+				})
+
+				Sunset:CreateAnimation(SearchFrame,0.35,{
+					Size = UDim2.new(searchScale.X.Scale, searchScale.X.Offset, 0, 0)
+				})
+
+				Sunset:CreateAnimation(DropShadow,0.35,{
+					ImageTransparency = 1
+				})
+
+				Sunset:CreateAnimation(SearchBox,0.5,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(UIStroke_2,0.5,{
+					Transparency = 1
+				})
+
+				Sunset:CreateAnimation(TextBox,0.5,{
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(TextBox,0.5,{
+					TextTransparency = 1
+				})
+
+				table.foreach(ScrollingFrame:GetChildren(),function(i,v)
+					if v:IsA('Frame') then
+						v:Destroy();
+					end;
+				end);
+			end;
+		end;
+
+		SearchFrame.Name = Sunset:RandomString()
+		SearchFrame.Parent = Sunsetwin;
+		SearchFrame.AnchorPoint = Vector2.new(0, 1)
+		SearchFrame.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+		SearchFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		SearchFrame.BorderSizePixel = 0
+		SearchFrame.Position = UDim2.new(4,0,4,0)
+		SearchFrame.Size = searchScale
+		SearchFrame.ZIndex = 100
+		SearchFrame.ClipsDescendants = true
+
+		UIStroke.Color = Color3.fromRGB(29, 29, 29)
+		UIStroke.Parent = SearchFrame
+
+		UICorner.CornerRadius = UDim.new(0, 2)
+		UICorner.Parent = SearchFrame
+
+		DropShadow.Name = Sunset:RandomString()
+		DropShadow.Parent = SearchFrame
+		DropShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+		DropShadow.BackgroundTransparency = 1.000
+		DropShadow.BorderSizePixel = 0
+		DropShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+		DropShadow.Rotation = 0.010
+		DropShadow.Size = UDim2.new(1, 47, 1, 47)
+		DropShadow.ZIndex = 99
+		DropShadow.Image = "rbxassetid://6014261993"
+		DropShadow.ImageColor3 = Color3.fromRGB(0, 0, 0)
+		DropShadow.ImageTransparency = 0.750
+		DropShadow.ScaleType = Enum.ScaleType.Slice
+		DropShadow.SliceCenter = Rect.new(49, 49, 450, 450)
+
+		SearchBox.Name = Sunset:RandomString()
+		SearchBox.Parent = SearchFrame
+		SearchBox.AnchorPoint = Vector2.new(0.5, 0)
+		SearchBox.BackgroundColor3 = Sunset.Colors.Black
+		SearchBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		SearchBox.BorderSizePixel = 0
+		SearchBox.Position = UDim2.new(0.5, 0, 0, 9)
+		SearchBox.Size = UDim2.new(1, -15, 0, 25)
+		SearchBox.ZIndex = 101
+
+		UICorner_2.CornerRadius = UDim.new(0, 2)
+		UICorner_2.Parent = SearchBox
+
+		UIStroke_2.Transparency = 0.650
+		UIStroke_2.Color = Color3.fromRGB(29, 29, 29)
+		UIStroke_2.Parent = SearchBox
+
+		TextBox.Parent = SearchBox
+		TextBox.AnchorPoint = Vector2.new(0.5, 0.5)
+		TextBox.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		TextBox.BackgroundTransparency = 1.000
+		TextBox.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		TextBox.BorderSizePixel = 0
+		TextBox.Position = UDim2.new(0.5, 0, 0.5, 0)
+		TextBox.Size = UDim2.new(1, -15, 1, -5)
+		TextBox.ZIndex = 102
+		TextBox.ClearTextOnFocus = false
+		TextBox.FontFace = Sunset.FontSemiBold;
+		TextBox.PlaceholderText = "Search"
+		TextBox.Text = ""
+		TextBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+		TextBox.TextSize = 12.000
+		TextBox.TextXAlignment = Enum.TextXAlignment.Left
+
+		ScrollingFrame.Parent = SearchFrame
+		ScrollingFrame.Active = true
+		ScrollingFrame.AnchorPoint = Vector2.new(0.5, 0)
+		ScrollingFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ScrollingFrame.BackgroundTransparency = 1.000
+		ScrollingFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ScrollingFrame.BorderSizePixel = 0
+		ScrollingFrame.Position = UDim2.new(0.5, 0, 0, 40)
+		ScrollingFrame.Size = UDim2.new(1, -15, 1, -45)
+		ScrollingFrame.ZIndex = 102
+		ScrollingFrame.ScrollBarThickness = 0
+
+		UIListLayout.Parent = ScrollingFrame
+		UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+		UIListLayout.Padding = UDim.new(0, 4)
+
+		UIListLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function()
+			ScrollingFrame.CanvasSize = UDim2.fromOffset(0,UIListLayout.AbsoluteContentSize.Y)
+		end)
+
+		SearchToggle(false);
+
+		Sunset:CreateHover(SearchButton,function(bool)
+			if bool then
+				Sunset:CreateAnimation(SearchButton,0.5,{
+					ImageTransparency = 0.1
+				})
+			else
+				Sunset:CreateAnimation(SearchButton,0.5,{
+					ImageTransparency = 0.5
+				})
+			end	
+		end);
+
+		local SearchInformation = {};
+
+		local get_button = function(Name,Path,TAB_WARP)
+			local ResultFrame = Instance.new("Frame")
+			local UICorner = Instance.new("UICorner")
+			local FeatureName = Instance.new("TextLabel")
+			local FeaturePath = Instance.new("TextLabel")
+
+			ResultFrame.Name = Sunset:RandomString()
+			ResultFrame.Parent = ScrollingFrame;
+			ResultFrame.BackgroundColor3 = Sunset.Colors.Black
+			ResultFrame.BackgroundTransparency = 1.000
+			ResultFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			ResultFrame.BorderSizePixel = 0
+			ResultFrame.Size = UDim2.new(1, 0, 0, 42)
+			ResultFrame.ZIndex = 103
+
+			UICorner.CornerRadius = UDim.new(0, 4)
+			UICorner.Parent = ResultFrame
+
+			FeatureName.Name = Sunset:RandomString()
+			FeatureName.Parent = ResultFrame
+			FeatureName.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			FeatureName.BackgroundTransparency = 1.000
+			FeatureName.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			FeatureName.BorderSizePixel = 0
+			FeatureName.Position = UDim2.new(0, 6, 0, 5)
+			FeatureName.Size = UDim2.new(1, 0, 0, 15)
+			FeatureName.ZIndex = 104
+			FeatureName.FontFace = Sunset.FontSemiBold
+			FeatureName.Text = Name
+			FeatureName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			FeatureName.TextSize = 14.000
+			FeatureName.TextXAlignment = Enum.TextXAlignment.Left
+
+			FeaturePath.Name = Sunset:RandomString()
+			FeaturePath.Parent = ResultFrame
+			FeaturePath.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			FeaturePath.BackgroundTransparency = 1.000
+			FeaturePath.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			FeaturePath.BorderSizePixel = 0
+			FeaturePath.Position = UDim2.new(0, 6, 0, 22)
+			FeaturePath.Size = UDim2.new(1, 0, 0, 15)
+			FeaturePath.ZIndex = 104
+			FeaturePath.FontFace = Sunset.FontSemiBold
+			FeaturePath.Text = Path
+			FeaturePath.TextColor3 = Color3.fromRGB(255, 255, 255)
+			FeaturePath.TextSize = 12.000
+			FeaturePath.TextTransparency = 0.500
+			FeaturePath.TextXAlignment = Enum.TextXAlignment.Left
+
+			local button = Sunset:NewInput(ResultFrame);
+
+			Sunset:CreateHover(button,function(bool)
+				if bool then
+					Sunset:CreateAnimation(ResultFrame,0.5,{
+						BackgroundTransparency = 0
+					})
+				else
+					Sunset:CreateAnimation(ResultFrame,0.5,{
+						BackgroundTransparency = 1
+					})
+				end	
+			end);
+
+			button.MouseButton1Click:Connect(function()
+				if TAB_WARP then
+					for i,v in next , Fatal.Menus do
+						if v.Root == TAB_WARP.Root then
+							Fatal.MenuSelected = v;
+							v.ValueSelect(true)
+						else
+							v.ValueSelect(false)
+						end;
+					end;
+				end;
+			end);
+
+			return ResultFrame;
+		end
+
+		SearchButton.MouseButton1Click:Connect(function()
+			TextBox.Text = "";
+
+			SearchToggle(true);
+
+			table.clear(SearchInformation);
+
+			table.foreach(ScrollingFrame:GetChildren(),function(i,v)
+				if v:IsA('Frame') then
+					v:Destroy();
+				end;
+			end);
+
+			table.foreach(Fatal.ElementContents,function(i,v)
+				local button = get_button(v.Name,v.Path,v._TAB);
+
+				SearchInformation[v.Path.." - "..Sunset:RandomString()] = {
+					root = button,
+					callback = function()
+
+					end,
+				};
+			end);
+		end)
+
+		local DearchDelay = tick();
+
+		TextBox:GetPropertyChangedSignal('Text'):Connect(function()
+			DearchDelay = tick();
+
+			if not TextBox.Text:byte() then
+				for i,v in next , SearchInformation do
+					v.root.Visible = true;
+				end;
+
+				return;
+			end;
+
+			task.delay(0.5,function()
+				if (tick() - DearchDelay) > 0.5 then
+					for i,v in next , SearchInformation do
+						if string.find(tostring(string.lower(i)),string.lower(TextBox.Text),1,true) then
+							v.root.Visible = true;
+						else
+							v.root.Visible = false;
+						end;
+					end;
+				end;
+			end)
+		end);
+
+		UserInputService.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				if not Sunset:IsMouseOverFrame(SearchFrame) then
+					SearchToggle(false);
+				end
+			end
+		end)
+	end;
+
+	function Fatal:GetButton()
+		local backpack = Instance.new("ImageButton")
+		local UICorner = Instance.new("UICorner")
+		local RowLabel = Instance.new("Frame")
+		local UIListLayout = Instance.new("UIListLayout")
+		local StyledTextLabel = Instance.new("TextLabel")
+		local UITextSizeConstraint = Instance.new("UITextSizeConstraint")
+		local UIPadding = Instance.new("UIPadding")
+		local IconHost = Instance.new("Frame")
+		local IntegrationIconFrame = Instance.new("Frame")
+		local UIListLayout_2 = Instance.new("UIListLayout")
+		local IntegrationIcon = Instance.new("ImageLabel")
+		local SelectedHighlighter = Instance.new("Frame")
+		local corner = Instance.new("UICorner")
+		local Highlighter = Instance.new("Frame")
+		local corner_2 = Instance.new("UICorner")
+		local _5 = Instance.new("Frame")
+
+		backpack.Name = "SUNSET"..Sunset:RandomString();
+		backpack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		backpack.BackgroundTransparency = 1.000
+		backpack.BorderSizePixel = 0
+		backpack.LayoutOrder = 9
+		backpack.Size = UDim2.new(1, 0, 0, 56)
+		backpack.AutoButtonColor = false
+
+		UICorner.CornerRadius = UDim.new(0, 10)
+		UICorner.Parent = backpack
+
+		RowLabel.Name = "RowLabel"
+		RowLabel.Parent = backpack
+		RowLabel.BackgroundTransparency = 1.000
+		RowLabel.BorderSizePixel = 0
+		RowLabel.LayoutOrder = 9
+		RowLabel.Size = UDim2.new(1, 0, 1, 0)
+
+		UIListLayout.Parent = RowLabel
+		UIListLayout.FillDirection = Enum.FillDirection.Horizontal
+		UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+		UIListLayout.Padding = UDim.new(0, 8)
+
+		StyledTextLabel.Name = "StyledTextLabel"
+		StyledTextLabel.Parent = RowLabel
+		StyledTextLabel.BackgroundTransparency = 1.000
+		StyledTextLabel.Size = UDim2.new(1, -52, 1, 0)
+		StyledTextLabel.Font = Enum.Font.BuilderSansBold
+		StyledTextLabel.Text = Window.Name
+		StyledTextLabel.TextColor3 = Color3.fromRGB(247, 247, 248)
+		StyledTextLabel.TextScaled = true
+		StyledTextLabel.TextSize = 20.000
+		StyledTextLabel.TextWrapped = true
+		StyledTextLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+		UITextSizeConstraint.Parent = StyledTextLabel
+		UITextSizeConstraint.MaxTextSize = 20
+		UITextSizeConstraint.MinTextSize = 15
+
+		UIPadding.Parent = RowLabel
+		UIPadding.PaddingLeft = UDim.new(0, 8)
+		UIPadding.PaddingRight = UDim.new(0, 8)
+
+		IconHost.Name = "IconHost"
+		IconHost.Parent = RowLabel
+		IconHost.BackgroundTransparency = 1.000
+		IconHost.BorderSizePixel = 0
+		IconHost.LayoutOrder = 9
+		IconHost.Size = UDim2.new(0, 44, 0, 44)
+		IconHost.ZIndex = 9
+
+		IntegrationIconFrame.Name = "IntegrationIconFrame"
+		IntegrationIconFrame.Parent = IconHost
+		IntegrationIconFrame.BackgroundTransparency = 1.000
+		IntegrationIconFrame.BorderSizePixel = 0
+		IntegrationIconFrame.Size = UDim2.new(1, 0, 1, 0)
+
+		UIListLayout_2.Parent = IntegrationIconFrame
+		UIListLayout_2.FillDirection = Enum.FillDirection.Horizontal
+		UIListLayout_2.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		UIListLayout_2.VerticalAlignment = Enum.VerticalAlignment.Center
+
+		IntegrationIcon.Name = "IntegrationIcon"
+		IntegrationIcon.Parent = IntegrationIconFrame
+		IntegrationIcon.BackgroundTransparency = 1.000
+		IntegrationIcon.Size = UDim2.new(0, 36, 0, 36)
+		IntegrationIcon.Image = "http://www.roblox.com/asset/?id=11290237405"
+		IntegrationIcon.ImageColor3 = Color3.fromRGB(247, 247, 248)
+
+		SelectedHighlighter.Name = "SelectedHighlighter"
+		SelectedHighlighter.Parent = IconHost
+		SelectedHighlighter.AnchorPoint = Vector2.new(0.5, 0.5)
+		SelectedHighlighter.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		SelectedHighlighter.BackgroundTransparency = 0.850
+		SelectedHighlighter.BorderSizePixel = 0
+		SelectedHighlighter.Position = UDim2.new(0.5, 0, 0.5, 0)
+		SelectedHighlighter.Size = UDim2.new(0, 36, 0, 36)
+		SelectedHighlighter.Visible = false
+
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Name = "corner"
+		corner.Parent = SelectedHighlighter
+
+		Highlighter.Name = "Highlighter"
+		Highlighter.Parent = IconHost
+		Highlighter.AnchorPoint = Vector2.new(0.5, 0.5)
+		Highlighter.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Highlighter.BackgroundTransparency = 0.850
+		Highlighter.BorderSizePixel = 0
+		Highlighter.Position = UDim2.new(0.5, 0, 0.5, 0)
+		Highlighter.Size = UDim2.new(0, 36, 0, 36)
+		Highlighter.Visible = false
+
+		corner_2.CornerRadius = UDim.new(1, 0)
+		corner_2.Name = "corner"
+		corner_2.Parent = Highlighter
+
+		_5.Name = "5"
+		_5.Parent = IconHost
+		_5.BackgroundTransparency = 1.000
+		_5.Size = UDim2.new(1, 0, 1, 0)
+		_5.ZIndex = 2
+
+		backpack.MouseButton1Click:Connect(function()
+			Fatal.Toggle = not Fatal.Toggle;
+
+			ToggleUI(Fatal.Toggle);
+		end);
+
+		backpack.MouseEnter:Connect(function()
+			Sunset:CreateAnimation(backpack,0.3,nil,{
+				BackgroundColor3 = Sunset.Colors.Main,
+				BackgroundTransparency = 0.85
+			})
+		end)
+
+		backpack.MouseLeave:Connect(function()
+			Sunset:CreateAnimation(backpack,0.3,nil,{
+				BackgroundTransparency = 1
+			})
+		end)
+
+		return backpack;
+	end;
+
+	function Fatal:SetVisible(b)
+		Fatal.Toggle = b;
+		ToggleUI(b);
+	end;
+
+	ToggleUI(true);
+
+	return Fatal;
+end;
+
+function Sunset:Loader(Config: Loader)
+	Config = Config or {};
+	Config.Name = Config.Name or "SUNSET";
+	Config.Duration = Config.Duration or 3.5;
+	Config.Scale = Config.Scale or 3;
+
+	local Blur = Instance.new('BlurEffect');
+	local Loader = Instance.new("ScreenGui")
+	local center = Instance.new("Frame")
+	local texts = Instance.new("Frame")
+	local UIListLayout = Instance.new("UIListLayout")
+	local BlackFrame = Instance.new("Frame")
+
+	Loader.Name = Sunset:RandomString()
+	Loader.Parent = CoreGui
+	Loader.IgnoreGuiInset = true
+	Loader.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+	center.Name = Sunset:RandomString()
+	center.Parent = Loader
+	center.AnchorPoint = Vector2.new(0.5, 0.5)
+	center.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	center.BackgroundTransparency = 1.000
+	center.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	center.BorderSizePixel = 0
+	center.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+	texts.Name = Sunset:RandomString()
+	texts.Parent = Loader
+	texts.AnchorPoint = Vector2.new(0.5, 0.5)
+	texts.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	texts.BackgroundTransparency = 1.000
+	texts.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	texts.BorderSizePixel = 0
+	texts.Position = UDim2.new(0.5, 0, 0.5, 0)
+	texts.Size = UDim2.new(1, 0, 0, 200)
+
+	UIListLayout.Parent = texts
+	UIListLayout.FillDirection = Enum.FillDirection.Horizontal
+	UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	UIListLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	UIListLayout.Padding = UDim.new(0, Config.Scale * 5)
+
+	BlackFrame.Name = Sunset:RandomString()
+	BlackFrame.Parent = Loader
+	BlackFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	BlackFrame.BackgroundTransparency = 1
+	BlackFrame.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	BlackFrame.BorderSizePixel = 0
+	BlackFrame.Size = UDim2.new(1, 0, 1, 0)
+
+	Blur.Size = 0;
+	Blur.Parent = game:GetService('Lighting');
+
+	Sunset:CreateAnimation(Blur,1,{
+		Size = 60
+	})
+
+	Sunset:CreateAnimation(BlackFrame,0.5,{
+		BackgroundTransparency = 0.7
+	}).Completed:Wait();
+
+	task.wait(0.5);
+
+	local UText = {
+		Y = 14,
+	};
+
+	local createText = function(TEXT)
+		local LIT = Instance.new("Frame")
+		local ASCII = Instance.new("TextLabel")
+		local UIGradient = Instance.new("UIGradient")
+		local UIScale = Instance.new("UIScale")
+
+		LIT.Name = Sunset:RandomString()
+		LIT.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		LIT.BackgroundTransparency = 1.000
+		LIT.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		LIT.BorderSizePixel = 0
+		LIT.Size = UDim2.new(0, 56, 0, 100)
+		LIT.ZIndex = 8
+
+		ASCII.Name = Sunset:RandomString()
+		ASCII.Parent = LIT
+		ASCII.AnchorPoint = Vector2.new(0.5, 0.5)
+		ASCII.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		ASCII.BackgroundTransparency = 1.000
+		ASCII.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		ASCII.BorderSizePixel = 0
+		ASCII.Position = UDim2.new(0.5, 0, 0.5, 0)
+		ASCII.Size = UDim2.new(0, 28, 0, 50)
+		ASCII.ZIndex = 8
+		ASCII.Font = Enum.Font.GothamBold
+		ASCII.Text = TEXT
+		ASCII.TextColor3 = Color3.fromRGB(255, 255, 255)
+		ASCII.TextSize = 50.000
+		ASCII.TextWrapped = true
+
+		local textsize = Sunset:GetTextSize(ASCII);
+
+		ASCII.Size = UDim2.new(0, textsize.X + 100, 0, 50)
+		LIT.Size = UDim2.new(0, (textsize.X * 2.5) + (UText[TEXT] or 0), 0, 100)
+
+		UIGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 116, 116)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(132, 58, 58))}
+		UIGradient.Rotation = 88
+		UIGradient.Parent = ASCII
+
+		UIScale.Parent = ASCII
+		UIScale.Scale = Config.Scale
+
+		return LIT,ASCII
+	end;
+
+	local PosText = {};
+	local IsFirst = true;
+
+	string.gsub(Config.Name,'.',function(T)
+		local L,A = createText(T);
+
+		L.Parent = texts;
+		A.TextTransparency = 1;
+
+		if not IsFirst then
+			A.Position = UDim2.new(0.5,0,0.5,200);
+		end;
+
+		table.insert(PosText,{
+			Frame = L,
+			Text = A
+		});
+
+		IsFirst = false;
+	end);
+
+	do
+		local StartText = Instance.new("TextLabel")
+		local UIGradient = Instance.new("UIGradient")
+		local UIScale = Instance.new("UIScale")
+
+		StartText.Name = Sunset:RandomString()
+		StartText.Parent = Loader
+		StartText.AnchorPoint = Vector2.new(0.5, 0.5)
+		StartText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		StartText.BackgroundTransparency = 1.000
+		StartText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+		StartText.BorderSizePixel = 0
+		StartText.Position = UDim2.new(0.5, 0, 0.5, 0)
+		StartText.Size = UDim2.new(0, 28, 0, 50)
+		StartText.ZIndex = 8
+		StartText.Font = Enum.Font.GothamBold
+		StartText.Text = Config.Name:sub(1,1)
+		StartText.TextColor3 = Color3.fromRGB(255, 255, 255)
+		StartText.TextSize = 50.000
+		StartText.TextWrapped = true
+		StartText.TextTransparency = 1;
+
+		local textsize = Sunset:GetTextSize(StartText);
+		local baseSIZX = textsize.X;
+
+		StartText.Size = UDim2.new(0, baseSIZX + 100, 0, 50)
+
+		UIGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 116, 116)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(132, 58, 58))}
+		UIGradient.Rotation = 88
+		UIGradient.Parent = StartText
+
+		UIScale.Parent = StartText
+		UIScale.Scale = Config.Scale * 4;
+
+		Sunset:CreateAnimation(StartText,0.45,{
+			TextTransparency = 0
+		})
+
+		Sunset:CreateAnimation(UIScale,0.5,{
+			Scale = Config.Scale;
+		});
+
+		task.wait(0.45);
+
+		Sunset:CreateAnimation(StartText,0.35,{
+			Position = UDim2.fromOffset(PosText[1].Frame.AbsolutePosition.X + (PosText[1].Frame.AbsoluteSize.X / 2),PosText[1].Frame.AbsolutePosition.Y + (PosText[1].Frame.AbsoluteSize.Y / 2) + math.abs(Loader.AbsolutePosition.Y))
+		})
+
+		task.wait(0.5);
+
+		for i,v in next , PosText do
+			if i > 1 then
+				Sunset:CreateAnimation(v.Text,0.65,{
+					Position = UDim2.new(0.5,0,0.5,0);
+					TextTransparency = 0
+				})
+			end;
+		end;
+
+		task.wait((Config.Duration - 0.5) + 0.65);
+
+		Sunset:CreateAnimation(StartText,1.5,{
+			TextTransparency = 1
+		})
+
+		for i,v in next , PosText do
+			Sunset:CreateAnimation(v.Text,1.5,{
+				TextTransparency = 1
+			})
+		end;
+
+		Sunset:CreateAnimation(Blur,1.5,{
+			Size = 0
+		})
+
+		Sunset:CreateAnimation(BlackFrame,1.5,{
+			BackgroundTransparency = 1
+		})
+
+		task.wait(1.65);
+
+		Loader:Destroy();
+	end;
+end;
+
+function Sunset:CreateNotifier(): Notifier
+	if Sunset.__NOTIFIER_CACHE then return Sunset.__NOTIFIER_CACHE; end;
+
+	local Notify = Instance.new("ScreenGui")
+	local layout = Instance.new("Frame")
+	local UIListLayout = Instance.new("UIListLayout")
+
+	Notify.Name = Sunset:RandomString();
+	Notify.Parent = CoreGui
+	Notify.ResetOnSpawn = false
+	Notify.ZIndexBehavior = Enum.ZIndexBehavior.Global
+	Notify.IgnoreGuiInset = true;
+
+	layout.Name = Sunset:RandomString();
+	layout.Parent = Notify
+	layout.AnchorPoint = Vector2.new(1, 0)
+	layout.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	layout.BackgroundTransparency = 1.000
+	layout.BorderColor3 = Color3.fromRGB(0, 0, 0)
+	layout.BorderSizePixel = 0
+	layout.Position = UDim2.new(1, -5, 0, 5)
+	layout.Size = UDim2.new(0, 150, 0, 50)
+
+	UIListLayout.Parent = layout
+	UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+	local res = Sunset:CreateResponse({
+		Notify = function(Config: Notify)
+			Config = Config or {}
+			Config.Icon = Config.Icon or "settings";
+			Config.Content = Config.Content or nil;
+			Config.Title = Config.Title or "Notification";
+			Config.Duration = Config.Duration or 5;
+
+			local notify = Instance.new("Frame")
+			local notify_block = Instance.new("Frame")
+			local UICorner = Instance.new("UICorner")
+			local UIStroke = Instance.new("UIStroke")
+			local Icon = Instance.new("ImageLabel")
+			local HeaderText = Instance.new("TextLabel")
+			local BodyText = Instance.new("TextLabel")
+
+			notify.Name = Sunset:RandomString()
+			notify.Parent = layout
+			notify.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+			notify.BackgroundTransparency = 1.000
+			notify.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			notify.BorderSizePixel = 0
+			notify.Size = UDim2.new(0, 0, 0, 0)
+
+			notify_block.Name = Sunset:RandomString()
+			notify_block.Parent = notify
+			notify_block.AnchorPoint = Vector2.new(0.5, 0)
+			notify_block.BackgroundColor3 = Color3.fromRGB(19, 19, 19)
+			notify_block.BackgroundTransparency = 1
+			notify_block.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			notify_block.BorderSizePixel = 0
+			notify_block.Position = UDim2.new(0.5, 0, -1, 0)
+			notify_block.Size = UDim2.new(1, 0, 1, -12)
+			notify_block.ClipsDescendants = true
+			notify_block.ZIndex = 54
+
+			UICorner.CornerRadius = UDim.new(0, 3)
+			UICorner.Parent = notify_block
+
+			UIStroke.Thickness = 1
+			UIStroke.Transparency = 1
+			UIStroke.Parent = notify_block
+
+			Icon.Name = Sunset:RandomString()
+			Icon.Parent = notify_block
+			Icon.BackgroundColor3 = Sunset.Colors.Main
+			Icon.BackgroundTransparency = 1.000
+			Icon.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			Icon.BorderSizePixel = 0
+			Icon.Position = UDim2.new(0, 7, 0, 7)
+			Icon.Size = UDim2.new(0, 18, 0, 18)
+			Icon.Image = Sunset:GetIcon(Config.Icon);
+			Icon.ImageColor3 = Sunset.Colors.Main
+			Icon.ImageTransparency = 1
+			Icon.ZIndex = 55
+
+			HeaderText.Name = Sunset:RandomString()
+			HeaderText.Parent = notify_block
+			HeaderText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			HeaderText.BackgroundTransparency = 1.000
+			HeaderText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			HeaderText.BorderSizePixel = 0
+			HeaderText.Position = UDim2.new(0, 30, 0, 7)
+			HeaderText.Size = UDim2.new(1, 0, 0, 15)
+			HeaderText.ZIndex = 55
+			HeaderText.FontFace = Sunset.FontSemiBold
+			HeaderText.Text = Config.Title
+			HeaderText.TextColor3 = Sunset.Colors.Main
+			HeaderText.TextSize = 13.000
+			HeaderText.TextTransparency = 1
+			HeaderText.TextXAlignment = Enum.TextXAlignment.Left
+
+			BodyText.Name = Sunset:RandomString()
+			BodyText.Parent = notify_block
+			BodyText.AnchorPoint = Vector2.new(0, 1)
+			BodyText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			BodyText.BackgroundTransparency = 1.000
+			BodyText.BorderColor3 = Color3.fromRGB(0, 0, 0)
+			BodyText.BorderSizePixel = 0
+			BodyText.Position = UDim2.new(0, 10, 1, 0)
+			BodyText.Size = UDim2.new(1, -15, 1, -29)
+			BodyText.ZIndex = 55
+			BodyText.FontFace = Sunset.FontSemiBold
+			BodyText.Text = Config.Content or "";
+			BodyText.TextColor3 = Color3.fromRGB(255, 255, 255)
+			BodyText.TextSize = 12.000
+			BodyText.TextTransparency = 1
+			BodyText.TextWrapped = true
+			BodyText.TextXAlignment = Enum.TextXAlignment.Left
+			BodyText.TextYAlignment = Enum.TextYAlignment.Top
+
+			local updateScale = function()
+				local TitleScale = Sunset:GetTextSize(HeaderText,Enum.Font.GothamBold);
+				local ContentScale = Sunset:GetTextSize(BodyText,Enum.Font.GothamMedium);
+
+				local XScale = (TitleScale.X > ContentScale.X and TitleScale.X) or ContentScale.X;
+				local YScale = (TitleScale.Y > ContentScale.Y and TitleScale.Y) or ContentScale.Y;
+
+				notify.Size = UDim2.new(0, XScale + 25, 0, YScale + 50);
+
+				Sunset:CreateAnimation(notify_block,0.35,{
+					Position = UDim2.new(0.5, 0, 0, 0)
+				});
+			end;
+
+			task.delay(0.1,function()
+				Sunset:CreateAnimation(notify_block,0.25,{
+					BackgroundTransparency = 0.1
+				})
+
+				Sunset:CreateAnimation(UIStroke,0.25,{
+					Thickness = 2.500,
+					Transparency = 0.900
+				})
+
+				Sunset:CreateAnimation(Icon,0.25,{
+					ImageTransparency = 0
+				})
+
+				Sunset:CreateAnimation(HeaderText,0.25,{
+					TextTransparency = 0.200
+				})
+
+				Sunset:CreateAnimation(BodyText,0.25,{
+					TextTransparency = 0.3
+				})
+			end);
+
+			updateScale();
+
+			task.delay(Config.Duration + 0.25,function()
+				Sunset:CreateAnimation(notify_block,0.35,{
+					Position = UDim2.new(0.5, 0, 1, 0)
+				})
+
+				Sunset:CreateAnimation(notify_block,0.25,{
+					BackgroundTransparency = 1
+				})
+
+				Sunset:CreateAnimation(UIStroke,0.25,{
+					Thickness = 1,
+					Transparency = 1
+				})
+
+				Sunset:CreateAnimation(Icon,0.25,{
+					ImageTransparency = 1
+				})
+
+				Sunset:CreateAnimation(HeaderText,0.25,{
+					TextTransparency = 1
+				})
+
+				Sunset:CreateAnimation(BodyText,0.25,{
+					TextTransparency = 1
+				})
+
+				task.delay(0.35,function()
+					Sunset:CreateAnimation(notify,0.5,{
+						Size = UDim2.new(0,0,0,0)
+					})
+
+					task.wait(0.5)
+
+					notify:Destroy();
+				end);
+			end)
+		end,
+	});
+
+	Sunset.__NOTIFIER_CACHE = res;
+
+	return res;
+end;
+
+Sunset.SUNSET_PID = Sunset:RandomString();
+
+return Sunset;
