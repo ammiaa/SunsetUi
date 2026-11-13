@@ -6,5 +6,5 @@
 
 ## Usage
 
-[Document](https://sunsetui.xo.je)
-[Exemple](https://github.com/ammiaa/SunsetUi/emeple.lua)
+[Document](https://sunset-ui.xo.je)
+[Exemple](https://github.com/ammiaa/SunsetUi/exemple.lua)
